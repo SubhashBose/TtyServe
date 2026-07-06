@@ -118,6 +118,7 @@ type pageData struct {
 	WriteEnabled       bool
 	SessionPersistence bool
 	PersistenceMode    string
+	FontSize           int
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -142,6 +143,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		WriteEnabled:       s.cfg.WriteEnabled,
 		SessionPersistence: s.cfg.SessionPersistence,
 		PersistenceMode:    string(s.cfg.PersistenceMode),
+		FontSize:           s.cfg.FontSize,
 	})
 }
 

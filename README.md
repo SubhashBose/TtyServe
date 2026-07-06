@@ -1,4 +1,4 @@
-# goterm
+# TtyServe
 
 A persistent, multi-session web terminal in Go — like [ttyd](https://github.com/tsl0922/ttyd),
 but sessions survive disconnects and each client can hold multiple terminals in a
@@ -27,8 +27,8 @@ renameable tab bar.
 Requires Go 1.22+.
 
 ```sh
-cd goterm
-go build -o goterm ./cmd/goterm
+cd ttyserve
+go build -o ttyserve ./cmd/ttyserve
 ```
 
 That's it — this builds offline. All dependencies are already resolved:
@@ -62,9 +62,9 @@ reconnect.
 ## Run
 
 ```sh
-./goterm -config config.example.yaml
+./ttyserve -config config.example.yaml
 # or override the address:
-./goterm -config config.example.yaml -listen :8080
+./ttyserve -config config.example.yaml -listen :8080
 ```
 
 Open http://localhost:7681.
@@ -81,17 +81,18 @@ See `config.example.yaml` for every option with defaults. Key ones:
 | `tab_bar_position` | `top` or `right` |
 | `users` | list of `{name, password}` for `user` mode |
 | `idle_timeout` | short-term session lifetime when disconnected |
-| `command` / `args` / `env` / `working_dir` | what each terminal runs |
+| `command` / `env` / `working_dir` | what each terminal runs; `command` is a full shell-style line, e.g. `"/usr/bin/tmux new -A -s main"` |
 | `write_enabled` | `false` = read-only terminals |
 | `max_clients_per_session` | shared-viewer cap (0 = unlimited) |
 | `scrollback_bytes` | server-side replay buffer per session |
+| `font_size` | terminal font size in px (default 14) |
 | `tls_cert_file` / `tls_key_file` | enable HTTPS |
 | `allow_origins` | extra websocket origins beyond same-host; `["*"]` = any |
 
 ## How it works
 
 ```
-cmd/goterm            entrypoint: flags, config, graceful shutdown
+cmd/ttyserve          entrypoint: flags, config, graceful shutdown
 internal/config       YAML config + defaults + validation
 internal/auth         identity resolution: basic-auth user OR signed cookie
 internal/terminal     PTY wrapper, output fan-out, scrollback ring buffer

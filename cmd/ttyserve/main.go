@@ -47,7 +47,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("goterm listening on %s (persistence=%v mode=%s multi=%v)",
+		log.Printf("ttyserve listening on %s (persistence=%v mode=%s multi=%v)",
 			cfg.Listen, cfg.SessionPersistence, cfg.PersistenceMode, cfg.MultiSession)
 		var err error
 		if cfg.TLSEnabled() {

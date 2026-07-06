@@ -31,9 +31,11 @@ type Config struct {
 	// Listen address, e.g. ":7681" or "127.0.0.1:7681".
 	Listen string `yaml:"listen"`
 
-	// Command and arguments to run for each terminal session.
+	// Command run for each terminal session, as a single shell-style line
+	// (e.g. "/usr/bin/tmux new -A -s main"). Quote arguments that contain
+	// spaces. Validate splits it into Command (argv[0]) and Args.
 	Command string   `yaml:"command"`
-	Args    []string `yaml:"args"`
+	Args    []string `yaml:"-"`
 
 	// Working directory for spawned terminals. Empty = server's cwd.
 	WorkingDir string `yaml:"working_dir"`
@@ -102,6 +104,9 @@ type Config struct {
 	// a reconnecting client can repaint the screen. 0 disables replay.
 	ScrollbackBytes int `yaml:"scrollback_bytes"`
 
+	// FontSize is the terminal font size in CSS pixels.
+	FontSize int `yaml:"font_size"`
+
 	// Title is the browser/page title.
 	Title string `yaml:"title"`
 
@@ -114,21 +119,21 @@ func Default() Config {
 	return Config{
 		Listen:               ":7681",
 		Command:              defaultShell(),
-		Args:                 nil,
 		SessionPersistence:   true,
 		PersistenceMode:      PersistShortTerm,
 		MultiSession:         true,
 		MaxSessionsPerClient: 0,
 		TabBarPosition:       "top",
-		AuthRealm:            "goterm",
+		AuthRealm:            "ttyserve",
 		IdleTimeout:          5 * time.Minute,
-		CookieName:           "goterm_session",
+		CookieName:           "ttyserve_session",
 		CookieSecure:         false,
 		WriteEnabled:         true,
 		MaxClientsPerSession: 0,
 		PingInterval:         20 * time.Second,
 		ScrollbackBytes:      256 * 1024,
-		Title:                "goterm",
+		FontSize:             14,
+		Title:                "TtyServe",
 		CloseOnExit:          true,
 	}
 }
@@ -158,9 +163,15 @@ func Load(path string) (Config, error) {
 
 // Validate checks config invariants and normalizes a few fields.
 func (c *Config) Validate() error {
-	if c.Command == "" {
+	argv, err := splitCommand(c.Command)
+	if err != nil {
+		return fmt.Errorf("command: %w", err)
+	}
+	if len(argv) == 0 {
 		return fmt.Errorf("command must not be empty")
 	}
+	c.Command = argv[0]
+	c.Args = argv[1:]
 	switch c.TabBarPosition {
 	case "top", "right":
 	case "":
@@ -185,15 +196,66 @@ func (c *Config) Validate() error {
 		}
 	}
 	if c.CookieName == "" {
-		c.CookieName = "goterm_session"
+		c.CookieName = "ttyserve_session"
 	}
 	if c.PingInterval <= 0 {
 		c.PingInterval = 20 * time.Second
+	}
+	if c.FontSize <= 0 {
+		c.FontSize = 14
 	}
 	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
 		return fmt.Errorf("tls_cert_file and tls_key_file must both be set or both empty")
 	}
 	return nil
+}
+
+// splitCommand tokenizes a command line shell-style: words separated by
+// spaces/tabs, with single quotes, double quotes, and backslash escapes
+// (outside single quotes) grouping words together.
+func splitCommand(s string) ([]string, error) {
+	var argv []string
+	var cur []rune
+	var quote rune
+	escaped, inWord := false, false
+	for _, r := range s {
+		switch {
+		case escaped:
+			cur = append(cur, r)
+			escaped = false
+		case r == '\\' && quote != '\'':
+			escaped = true
+			inWord = true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur = append(cur, r)
+			}
+		case r == '\'' || r == '"':
+			quote = r
+			inWord = true
+		case r == ' ' || r == '\t':
+			if inWord {
+				argv = append(argv, string(cur))
+				cur = cur[:0]
+				inWord = false
+			}
+		default:
+			cur = append(cur, r)
+			inWord = true
+		}
+	}
+	if escaped {
+		return nil, fmt.Errorf("trailing backslash")
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unclosed quote")
+	}
+	if inWord {
+		argv = append(argv, string(cur))
+	}
+	return argv, nil
 }
 
 // TLSEnabled reports whether TLS files are configured.

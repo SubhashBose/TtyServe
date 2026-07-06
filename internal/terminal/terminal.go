@@ -4,6 +4,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 
 	"github.com/creack/pty"
@@ -220,6 +221,20 @@ func (t *Terminal) Write(p []byte) (int, error) {
 // Resize changes the PTY window size.
 func (t *Terminal) Resize(rows, cols uint16) error {
 	return pty.Setsize(t.ptmx, &pty.Winsize{Rows: rows, Cols: cols})
+}
+
+// Cwd returns the child process's current working directory, or "" when it
+// cannot be determined (process exited, or a platform without /proc such as
+// macOS/Windows — auto tab titles simply stay at their initial value there).
+func (t *Terminal) Cwd() string {
+	if t.cmd.Process == nil {
+		return ""
+	}
+	cwd, err := os.Readlink("/proc/" + strconv.Itoa(t.cmd.Process.Pid) + "/cwd")
+	if err != nil {
+		return ""
+	}
+	return cwd
 }
 
 // Exited returns a channel closed when the child process exits.

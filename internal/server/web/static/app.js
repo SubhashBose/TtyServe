@@ -1,8 +1,8 @@
-/* goterm frontend controller */
+/* ttyserve frontend controller */
 (function () {
   "use strict";
 
-  const cfg = window.GOTERM;
+  const cfg = window.TTYSERVE;
   const tabbar = document.getElementById("tabbar");
   const newtabBtn = document.getElementById("newtab");
   const termsEl = document.getElementById("terminals");
@@ -40,7 +40,7 @@
     const term = new Terminal({
       cursorBlink: true,
       fontFamily: "Menlo, Consolas, monospace",
-      fontSize: 14,
+      fontSize: cfg.fontSize || 14,
       theme: { background: "#1e1e1e", foreground: "#cccccc" },
       disableStdin: !cfg.writeEnabled,
       scrollback: 10000,
@@ -51,9 +51,10 @@
   }
 
   function connect(entry, sessionId) {
+    // Resolve relative to the page so the app works under any base path.
+    const u = new URL("ws?session=" + encodeURIComponent(sessionId), location.href);
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = proto + "//" + location.host + "/ws?session=" + encodeURIComponent(sessionId);
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(proto + "//" + u.host + u.pathname + u.search);
     ws.binaryType = "arraybuffer";
     entry.ws = ws;
 
@@ -62,7 +63,11 @@
       entry._backoff = 500;
       updateTabState(entry);
       showStatus("connected");
-      sendResize(entry);
+      if (entry.id === activeId) {
+        fitActiveSoon(); // fit (or re-fit) now that we can tell the PTY
+      } else {
+        sendResize(entry);
+      }
     };
 
     ws.onmessage = (ev) => {
@@ -88,7 +93,7 @@
       // session whose shell has exited.
       let alive;
       try {
-        const list = await api("GET", "/api/sessions");
+        const list = await api("GET", "api/sessions");
         alive = list.some((s) => s.id === sessionId);
       } catch (e) {
         // Network down: trust the exit signal if we got one, else keep retrying.
@@ -131,6 +136,35 @@
     sendResize(entry);
   }
 
+  // fit() silently no-ops when called before xterm's first render (cell
+  // metrics aren't measured yet), which would leave the terminal at 80
+  // columns in a full-width window. Re-fit a few times shortly after to
+  // catch the renderer once it's ready.
+  function fitActiveSoon() {
+    fitActive();
+    requestAnimationFrame(fitActive);
+    setTimeout(fitActive, 150);
+  }
+
+  // Copy text to the clipboard; falls back to a hidden textarea +
+  // execCommand for non-secure (plain http) contexts where the async
+  // Clipboard API is unavailable.
+  function copyText(text, entry) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).catch(() => {});
+      return;
+    }
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    ta.remove();
+    if (entry) entry.term.focus(); // the textarea stole focus
+  }
+
   function updateTabState(entry) {
     if (entry.tabEl) entry.tabEl.classList.toggle("disconnected", !entry.connected);
   }
@@ -148,12 +182,41 @@
     }
     term.onResize(() => sendResize(entry));
 
+    // Selecting text copies it to the clipboard (like a Linux terminal).
+    // Debounced so we don't write on every mouse-move during a drag.
+    let copyTimer = null;
+    term.onSelectionChange(() => {
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(() => {
+        const sel = term.getSelection();
+        if (sel) copyText(sel, entry);
+      }, 120);
+    });
+
+    // Middle-click pastes the clipboard. term.paste() respects bracketed
+    // paste mode, so pasting into vim/shells behaves correctly.
+    pane.addEventListener("mousedown", (e) => {
+      if (e.button === 1) e.preventDefault(); // suppress autoscroll
+    });
+    pane.addEventListener("auxclick", (e) => {
+      if (e.button !== 1 || !cfg.writeEnabled) return;
+      e.preventDefault();
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText()
+          .then((text) => { if (text) term.paste(text); })
+          .catch(() => showStatus("clipboard read blocked by browser"));
+      } else {
+        showStatus("paste needs HTTPS (Ctrl+Shift+V still works)");
+      }
+    });
+
     // Tab element
     const tabEl = document.createElement("div");
     tabEl.className = "tab";
     const titleEl = document.createElement("span");
     titleEl.className = "title";
     titleEl.textContent = info.title;
+    titleEl.title = "Double-click to rename";
     tabEl.appendChild(titleEl);
 
     if (cfg.multiSession) {
@@ -199,7 +262,13 @@
       entry.pane.classList.toggle("active", on);
       entry.tabEl.classList.toggle("active", on);
       if (on) {
-        setTimeout(() => { fitActive(); entry.term.focus(); }, 0);
+        // Don't steal focus while the tab title is being renamed: a
+        // double-click fires two clicks first, and their deferred
+        // term.focus() would blur the editor and kick us out of edit mode.
+        setTimeout(() => {
+          fitActiveSoon();
+          if (!entry.renaming) entry.term.focus();
+        }, 0);
       }
     }
   }
@@ -207,6 +276,7 @@
   function beginRename(id, titleEl) {
     const entry = panes.get(id);
     if (!entry) return;
+    entry.renaming = true;
     const old = titleEl.textContent;
     titleEl.contentEditable = "true";
     titleEl.focus();
@@ -218,20 +288,21 @@
     sel.addRange(range);
 
     function finish(commit) {
+      entry.renaming = false;
       titleEl.contentEditable = "false";
       titleEl.removeEventListener("keydown", onKey);
       titleEl.removeEventListener("blur", onBlur);
       const next = titleEl.textContent.trim();
       if (commit && next && next !== old) {
-        api("PATCH", "/api/sessions/" + encodeURIComponent(id), { title: next })
+        api("PATCH", "api/sessions/" + encodeURIComponent(id), { title: next })
           .catch(() => { titleEl.textContent = old; });
       } else {
         titleEl.textContent = old;
       }
     }
     function onKey(e) {
-      if (e.key === "Enter") { e.preventDefault(); finish(true); }
-      else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+      if (e.key === "Enter") { e.preventDefault(); finish(true); entry.term.focus(); }
+      else if (e.key === "Escape") { e.preventDefault(); finish(false); entry.term.focus(); }
     }
     function onBlur() { finish(true); }
     titleEl.addEventListener("keydown", onKey);
@@ -267,17 +338,31 @@
   }
 
   async function closeSession(id) {
-    try { await api("DELETE", "/api/sessions/" + encodeURIComponent(id)); } catch (e) {}
+    try { await api("DELETE", "api/sessions/" + encodeURIComponent(id)); } catch (e) {}
     removeTabUI(id);
   }
 
   async function addSession() {
     try {
-      const info = await api("POST", "/api/sessions", { title: "terminal" });
+      const info = await api("POST", "api/sessions"); // empty title -> server default
       createTab(info);
       activate(info.id);
     } catch (e) {
       showStatus("cannot add session");
+    }
+  }
+
+  // Reflect server-side title changes (auto cwd titles, renames from another
+  // window). Tabs being renamed locally are left alone.
+  async function syncTitles() {
+    if (document.hidden) return;
+    let list;
+    try { list = await api("GET", "api/sessions"); } catch (e) { return; }
+    for (const info of list) {
+      const entry = panes.get(info.id);
+      if (entry && !entry.renaming && entry.titleEl.textContent !== info.title) {
+        entry.titleEl.textContent = info.title;
+      }
     }
   }
 
@@ -287,9 +372,15 @@
     if (window.ResizeObserver) {
       new ResizeObserver(() => fitActive()).observe(termsEl);
     }
+    // Ephemeral mode has no stable identity across requests, so skip polling.
+    if (cfg.persistence) setInterval(syncTitles, 3000);
+    // Cell metrics change once the terminal font finishes loading.
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => fitActive());
+    }
 
     let list = [];
-    try { list = await api("GET", "/api/sessions"); } catch (e) {}
+    try { list = await api("GET", "api/sessions"); } catch (e) {}
     if (!list || list.length === 0) {
       // Server guarantees one on index load, but be defensive.
       await addSession();

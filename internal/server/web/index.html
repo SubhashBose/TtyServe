@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>{{.Title}}</title>
-<link rel="stylesheet" href="/static/xterm.css" />
+<link rel="stylesheet" href="static/xterm.css" />
 <style>
   :root {
     --bg: #1e1e1e;
@@ -38,6 +38,7 @@
     background: #4ec9b0; flex: none; }
   .tab.disconnected::before { background: #f48771; }
   .tab .title { outline: none; }
+  .tab .title[contenteditable="true"] { user-select: text; cursor: text; }
   .tab .close { opacity: .6; font-weight: bold; padding: 0 2px; }
   .tab .close:hover { opacity: 1; color: #f48771; }
   #newtab { background: transparent; color: var(--fg); border: 1px dashed var(--tab-border);
@@ -64,16 +65,17 @@
 </div>
 
 <script>
-  window.GOTERM = {
+  window.TTYSERVE = {
     multiSession: {{.MultiSession}},
     tabBarPosition: "{{.TabBarPosition}}",
     writeEnabled: {{.WriteEnabled}},
     persistence: {{.SessionPersistence}},
-    persistenceMode: "{{.PersistenceMode}}"
+    persistenceMode: "{{.PersistenceMode}}",
+    fontSize: {{.FontSize}}
   };
 </script>
-<script src="/static/xterm.js"></script>
-<script src="/static/xterm-addon-fit.js"></script>
-<script src="/static/app.js"></script>
+<script src="static/xterm.js"></script>
+<script src="static/xterm-addon-fit.js"></script>
+<script src="static/app.js"></script>
 </body>
 </html>

@@ -1,11 +1,13 @@
-# goterm configuration. All fields are optional; defaults shown.
+# TtyServe configuration. All fields are optional; defaults shown.
 
 listen: ":7681"
 
-# Command run for each terminal session.
+# Command run for each terminal session. Arguments go on the same line,
+# shell-style; quote arguments containing spaces.
+#   e.g. command: "/usr/bin/tmux new -A -s main"
+#        command: "/bin/sh -c 'echo hi && exec bash'"
 command: "/bin/bash"
-args: []
-working_dir: ""        # empty = server's cwd
+working_dir: "/home/subhash"        # empty = server's cwd
 env: []                # e.g. ["FOO=bar"]
 
 # --- Persistence ---
@@ -27,11 +29,11 @@ users:
     password: "changeme"
   # - name: "alice"
   #   password: "s3cret"
-auth_realm: "goterm"
+auth_realm: "ttyserve"
 
 # --- Short-term sessions (persistence_mode: short_term) ---
 idle_timeout: 5m             # how long a disconnected session survives
-cookie_name: "goterm_session"
+cookie_name: "ttyserve_session"
 cookie_secure: false         # set true when serving over HTTPS
 
 # Extra Origins allowed to open websockets (same-host is always allowed).
@@ -47,5 +49,6 @@ write_enabled: true          # false = read-only terminals
 max_clients_per_session: 0   # 0 = unlimited shared viewers
 ping_interval: 20s
 scrollback_bytes: 262144     # server-side replay buffer per session
-title: "goterm"
+font_size: 14                # terminal font size in px
+title: "TtyServe"
 close_on_exit: true          # remove session when its shell exits

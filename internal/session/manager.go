@@ -2,6 +2,8 @@ package session
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -16,7 +18,8 @@ var (
 
 // Manager owns all clients and their sessions.
 type Manager struct {
-	cfg config.Config
+	cfg      config.Config
+	defTitle string // default tab title: basename of the terminals' working dir
 
 	mu      sync.Mutex
 	clients map[string]*Client
@@ -28,13 +31,15 @@ type Manager struct {
 // NewManager creates a manager and starts the reaper if needed.
 func NewManager(cfg config.Config) *Manager {
 	m := &Manager{
-		cfg:     cfg,
-		clients: make(map[string]*Client),
-		stop:    make(chan struct{}),
+		cfg:      cfg,
+		defTitle: defaultTitle(cfg.WorkingDir),
+		clients:  make(map[string]*Client),
+		stop:     make(chan struct{}),
 	}
 	if cfg.SessionPersistence && cfg.PersistenceMode == config.PersistShortTerm {
 		go m.reaper()
 	}
+	go m.titleUpdater()
 	return m
 }
 
@@ -73,14 +78,18 @@ func (m *Manager) CreateSession(c *Client, title string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	// An explicit title pins the tab; empty means auto (default now, then
+	// tracking the shell's cwd).
+	userTitled := title != ""
 	if title == "" {
-		title = "terminal"
+		title = m.defTitle
 	}
 	s := &Session{
-		ID:       newSessionID(),
-		Title:    title,
-		Created:  time.Now(),
-		terminal: term,
+		ID:         newSessionID(),
+		Title:      title,
+		Created:    time.Now(),
+		terminal:   term,
+		userTitled: userTitled,
 	}
 	c.add(s)
 
@@ -111,7 +120,49 @@ func (m *Manager) EnsureDefaultSession(c *Client) (*Session, error) {
 		s, _ := c.Get(list[0].ID)
 		return s, nil
 	}
-	return m.CreateSession(c, "terminal")
+	return m.CreateSession(c, "")
+}
+
+// titleUpdater keeps auto-titled sessions named after their shell's current
+// working directory. Sessions the user has titled are never touched.
+func (m *Manager) titleUpdater() {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.stop:
+			return
+		case <-ticker.C:
+			m.mu.Lock()
+			clients := make([]*Client, 0, len(m.clients))
+			for _, c := range m.clients {
+				clients = append(clients, c)
+			}
+			m.mu.Unlock()
+			for _, c := range clients {
+				for _, s := range c.Sessions() {
+					if cwd := s.Term().Cwd(); cwd != "" {
+						s.AutoTitle(filepath.Base(cwd))
+					}
+				}
+			}
+		}
+	}
+}
+
+// defaultTitle derives the default tab title from the directory terminals
+// start in: the configured working_dir, or the server's cwd when unset.
+func defaultTitle(workingDir string) string {
+	dir := workingDir
+	if dir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			dir = wd
+		}
+	}
+	if base := filepath.Base(dir); base != "" && base != "." {
+		return base
+	}
+	return "terminal"
 }
 
 // ConnAttached / ConnDetached track live websockets for idle accounting.

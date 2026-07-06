@@ -17,15 +17,29 @@ type Session struct {
 	terminal *terminal.Terminal
 
 	mu sync.Mutex
+	// userTitled is set once the user chooses a title (explicit title on
+	// create, or a rename). It pins the title: auto cwd-tracking stops.
+	userTitled bool
 }
 
 // Term returns the underlying terminal.
 func (s *Session) Term() *terminal.Terminal { return s.terminal }
 
-// Rename sets the tab title.
+// Rename sets the tab title and pins it against auto-titling.
 func (s *Session) Rename(title string) {
 	s.mu.Lock()
 	s.Title = title
+	s.userTitled = true
+	s.mu.Unlock()
+}
+
+// AutoTitle updates the title to follow the shell's cwd, unless the user has
+// set a title themselves.
+func (s *Session) AutoTitle(title string) {
+	s.mu.Lock()
+	if !s.userTitled && title != "" {
+		s.Title = title
+	}
 	s.mu.Unlock()
 }
 
@@ -76,6 +90,19 @@ func (c *Client) List() []SessionInfo {
 	for _, id := range c.order {
 		if s, ok := c.sess[id]; ok {
 			out = append(out, SessionInfo{ID: s.ID, Title: s.GetTitle()})
+		}
+	}
+	return out
+}
+
+// Sessions returns the sessions themselves in creation order.
+func (c *Client) Sessions() []*Session {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]*Session, 0, len(c.order))
+	for _, id := range c.order {
+		if s, ok := c.sess[id]; ok {
+			out = append(out, s)
 		}
 	}
 	return out
