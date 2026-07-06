@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>{{.Title}}</title>
+<link rel="stylesheet" href="/static/xterm.css" />
+<style>
+  :root {
+    --bg: #1e1e1e;
+    --bar-bg: #252526;
+    --tab-bg: #2d2d2d;
+    --tab-active: #1e1e1e;
+    --tab-border: #3c3c3c;
+    --fg: #cccccc;
+    --accent: #0e639c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif; }
+  #app { display: flex; height: 100%; }
+  #app.bar-top { flex-direction: column; }
+  #app.bar-right { flex-direction: row-reverse; }
+
+  #tabbar { background: var(--bar-bg); display: flex; gap: 2px; padding: 4px;
+    overflow: auto; }
+  #app.bar-top #tabbar { flex-direction: row; align-items: center;
+    border-bottom: 1px solid var(--tab-border); }
+  #app.bar-right #tabbar { flex-direction: column; width: 180px;
+    border-left: 1px solid var(--tab-border); }
+  #app.hide-tabs #tabbar { display: none; }
+
+  .tab { background: var(--tab-bg); border: 1px solid var(--tab-border);
+    border-radius: 4px; padding: 5px 10px; cursor: pointer; white-space: nowrap;
+    display: flex; align-items: center; gap: 6px; font-size: 13px; user-select: none; }
+  .tab.active { background: var(--tab-active); border-color: var(--accent); }
+  .tab::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: #4ec9b0; flex: none; }
+  .tab.disconnected::before { background: #f48771; }
+  .tab .title { outline: none; }
+  .tab .close { opacity: .6; font-weight: bold; padding: 0 2px; }
+  .tab .close:hover { opacity: 1; color: #f48771; }
+  #newtab { background: transparent; color: var(--fg); border: 1px dashed var(--tab-border);
+    border-radius: 4px; cursor: pointer; padding: 5px 10px; font-size: 13px; }
+  #newtab:hover { border-color: var(--accent); }
+
+  #terminals { position: relative; flex: 1; min-height: 0; min-width: 0; }
+  .term-pane { position: absolute; inset: 0; display: none; }
+  .term-pane.active { display: block; }
+
+  #status { position: absolute; bottom: 8px; right: 12px; font-size: 12px;
+    background: rgba(0,0,0,.6); padding: 3px 8px; border-radius: 4px;
+    pointer-events: none; opacity: 0; transition: opacity .2s; }
+  #status.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="app" class="bar-{{.TabBarPosition}}{{if not .MultiSession}} hide-tabs{{end}}">
+  <div id="tabbar">
+    {{if .MultiSession}}<button id="newtab" title="New terminal">+ New</button>{{end}}
+  </div>
+  <div id="terminals"></div>
+  <div id="status"></div>
+</div>
+
+<script>
+  window.GOTERM = {
+    multiSession: {{.MultiSession}},
+    tabBarPosition: "{{.TabBarPosition}}",
+    writeEnabled: {{.WriteEnabled}},
+    persistence: {{.SessionPersistence}},
+    persistenceMode: "{{.PersistenceMode}}"
+  };
+</script>
+<script src="/static/xterm.js"></script>
+<script src="/static/xterm-addon-fit.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

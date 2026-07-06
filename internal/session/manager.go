@@ -1,0 +1,170 @@
+package session
+
+import (
+	"errors"
+	"sync"
+	"time"
+
+	"ttyserve/internal/config"
+	"ttyserve/internal/terminal"
+)
+
+var (
+	ErrTooManySessions = errors.New("session limit reached")
+	ErrNotFound        = errors.New("session not found")
+)
+
+// Manager owns all clients and their sessions.
+type Manager struct {
+	cfg config.Config
+
+	mu      sync.Mutex
+	clients map[string]*Client
+
+	stop     chan struct{}
+	stopOnce sync.Once
+}
+
+// NewManager creates a manager and starts the reaper if needed.
+func NewManager(cfg config.Config) *Manager {
+	m := &Manager{
+		cfg:     cfg,
+		clients: make(map[string]*Client),
+		stop:    make(chan struct{}),
+	}
+	if cfg.SessionPersistence && cfg.PersistenceMode == config.PersistShortTerm {
+		go m.reaper()
+	}
+	return m
+}
+
+// Client returns (creating if needed) the client for an identity.
+func (m *Manager) Client(id string) *Client {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.clients[id]
+	if !ok {
+		c = newClient(id)
+		m.clients[id] = c
+	}
+	return c
+}
+
+// GetClient returns an existing client without creating one.
+func (m *Manager) GetClient(id string) (*Client, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.clients[id]
+	return c, ok
+}
+
+// CreateSession spawns a new terminal/tab for a client.
+func (m *Manager) CreateSession(c *Client, title string) (*Session, error) {
+	if m.cfg.MaxSessionsPerClient > 0 && c.Count() >= m.cfg.MaxSessionsPerClient {
+		return nil, ErrTooManySessions
+	}
+	term, err := terminal.New(terminal.Options{
+		Command:         m.cfg.Command,
+		Args:            m.cfg.Args,
+		Env:             m.cfg.Env,
+		WorkingDir:      m.cfg.WorkingDir,
+		ScrollbackBytes: m.cfg.ScrollbackBytes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if title == "" {
+		title = "terminal"
+	}
+	s := &Session{
+		ID:       newSessionID(),
+		Title:    title,
+		Created:  time.Now(),
+		terminal: term,
+	}
+	c.add(s)
+
+	// If configured to remove sessions when the shell exits, watch for it.
+	if m.cfg.CloseOnExit {
+		go func() {
+			<-term.Exited()
+			c.remove(s.ID)
+		}()
+	}
+	return s, nil
+}
+
+// CloseSession removes and terminates a session.
+func (m *Manager) CloseSession(c *Client, id string) error {
+	if _, ok := c.Get(id); !ok {
+		return ErrNotFound
+	}
+	c.remove(id)
+	return nil
+}
+
+// EnsureDefaultSession guarantees a client has at least one session and returns
+// the first one. Useful for single-session mode and first connect.
+func (m *Manager) EnsureDefaultSession(c *Client) (*Session, error) {
+	list := c.List()
+	if len(list) > 0 {
+		s, _ := c.Get(list[0].ID)
+		return s, nil
+	}
+	return m.CreateSession(c, "terminal")
+}
+
+// ConnAttached / ConnDetached track live websockets for idle accounting.
+func (m *Manager) ConnAttached(c *Client) { c.connAdd() }
+func (m *Manager) ConnDetached(c *Client) { c.connRemove() }
+func (m *Manager) Touch(c *Client)        { c.touch() }
+
+// reaper removes short-term clients idle beyond the timeout with no active
+// connections, killing all their sessions.
+func (m *Manager) reaper() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.stop:
+			return
+		case <-ticker.C:
+			m.reapOnce()
+		}
+	}
+}
+
+func (m *Manager) reapOnce() {
+	cutoff := time.Now().Add(-m.cfg.IdleTimeout)
+	var toKill []*Client
+	m.mu.Lock()
+	for id, c := range m.clients {
+		last, active := c.idleSince()
+		if active == 0 && last.Before(cutoff) {
+			toKill = append(toKill, c)
+			delete(m.clients, id)
+		}
+	}
+	m.mu.Unlock()
+	for _, c := range toKill {
+		for _, info := range c.List() {
+			c.remove(info.ID)
+		}
+	}
+}
+
+// Shutdown stops the reaper and closes every session. Safe to call repeatedly.
+func (m *Manager) Shutdown() {
+	m.stopOnce.Do(func() {
+		close(m.stop)
+		m.mu.Lock()
+		clients := m.clients
+		m.clients = make(map[string]*Client)
+		m.mu.Unlock()
+		for _, c := range clients {
+			for _, info := range c.List() {
+				c.remove(info.ID)
+			}
+		}
+	})
+}
