@@ -83,12 +83,16 @@
     persistenceMode: "{{.PersistenceMode}}",
     fontSize: {{.FontSize}},
     graphics: {{.EnableGraphics}},
+    hyperlinks: {{not .DisableHyperlink}},
+    middleclickPaste: {{.MiddleclickPaste}},
     sessions: {{.Sessions}}
   };
 </script>
 <script src="static/xterm.js?v={{.V}}"></script>
 <script src="static/xterm-addon-fit.js?v={{.V}}"></script>
 <script src="static/xterm-addon-canvas.js?v={{.V}}"></script>
+{{if not .DisableHyperlink}}<script src="static/xterm-addon-web-links.js?v={{.V}}"></script>
+{{end}}
 {{if .EnableGraphics}}<script src="static/xterm-addon-image.js?v={{.V}}"></script>
 {{end}}<script src="static/app.js?v={{.V}}"></script>
 </body>

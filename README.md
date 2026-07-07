@@ -101,6 +101,8 @@ defaults. See `config.example.yaml` for the annotated file. Key options:
 | `scrollback_bytes` | server-side replay buffer per session |
 | `font_size` | terminal font size in px (default 14) |
 | `enable_graphics` | inline images via sixel + iTerm2 protocol (default true) |
+| `disable_hyperlink` | `true` = links in output are not clickable (default false) |
+| `middleclick_paste` | paste clipboard on middle click (default true) |
 | `tls_cert_file` / `tls_key_file` | enable TLS (applies to TCP and unix-socket listeners alike) |
 | `allow_origins` | extra websocket origins beyond same-host; `["*"]` = any |
 

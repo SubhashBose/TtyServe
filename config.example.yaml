@@ -75,6 +75,8 @@ scrollback_bytes: 262144     # server-side replay buffer per session (default: 2
 font_size: 14                # terminal font size in px (default: 14)
 enable_graphics: true        # inline images via sixel/iTerm2 protocol (default: true);
                              # turn off for shared read-only viewing or low-memory clients
+disable_hyperlink: false     # true = links in output are not clickable (default: false)
+middleclick_paste: true      # paste clipboard on middle click (default: true)
 title: "TtyServe"            # browser page title (default: TtyServe)
 close_on_exit: true          # remove session when its command exits (default: true);
                              # false keeps the tab, offering restart on Enter

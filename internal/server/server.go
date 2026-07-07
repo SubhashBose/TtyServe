@@ -272,6 +272,8 @@ type pageData struct {
 	PersistenceMode    string
 	FontSize           int
 	EnableGraphics     bool
+	DisableHyperlink   bool
+	MiddleclickPaste   bool
 	// Sessions is inlined into the page so the frontend can build tabs and
 	// open websockets immediately, without a follow-up API round trip.
 	Sessions []session.SessionInfo
@@ -309,6 +311,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		PersistenceMode:    string(s.cfg.PersistenceMode),
 		FontSize:           s.cfg.FontSize,
 		EnableGraphics:     s.cfg.EnableGraphics,
+		DisableHyperlink:   s.cfg.DisableHyperlink,
+		MiddleclickPaste:   s.cfg.MiddleclickPaste,
 		Sessions:           cl.List(),
 		V:                  s.assetVer,
 	})

@@ -50,17 +50,36 @@
     return res.json();
   }
 
+  function openLink(uri) {
+    // Only open safe schemes; terminal output is untrusted.
+    if (!/^https?:\/\//i.test(uri)) return;
+    const w = window.open();
+    if (w) { w.opener = null; w.location.href = uri; }
+  }
+
   function makeTerminal() {
-    const term = new Terminal({
+    const opts = {
       cursorBlink: true,
       fontFamily: "Menlo, Consolas, monospace",
       fontSize: cfg.fontSize || 14,
       theme: { background: "#1e1e1e", foreground: "#cccccc" },
       disableStdin: cfg.readonly,
       scrollback: 10000,
-    });
+    };
+    if (cfg.hyperlinks) {
+      // OSC 8 explicit hyperlinks (e.g. `ls --hyperlink`).
+      opts.linkHandler = { activate: (ev, uri) => openLink(uri) };
+    }
+    const term = new Terminal(opts);
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
+    // Plain-text URL detection; the addon script is only served when
+    // hyperlinks are enabled.
+    if (cfg.hyperlinks && window.WebLinksAddon) {
+      try {
+        term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => openLink(uri)));
+      } catch (e) {}
+    }
     // Inline graphics (sixel + iTerm2 image protocol); the addon script is
     // only served when enable_graphics is on.
     if (cfg.graphics && window.ImageAddon) {
@@ -247,7 +266,7 @@
       if (e.button === 1) e.preventDefault(); // suppress autoscroll
     });
     pane.addEventListener("auxclick", (e) => {
-      if (e.button !== 1 || cfg.readonly) return;
+      if (e.button !== 1 || cfg.readonly || !cfg.middleclickPaste) return;
       e.preventDefault();
       if (navigator.clipboard && navigator.clipboard.readText) {
         navigator.clipboard.readText()

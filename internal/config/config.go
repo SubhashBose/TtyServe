@@ -135,6 +135,14 @@ type Config struct {
 	// FontSize is the terminal font size in CSS pixels.
 	FontSize int `yaml:"font_size"`
 
+	// DisableHyperlink turns off clickable links in the terminal (both
+	// auto-detected URLs and OSC 8 explicit hyperlinks).
+	DisableHyperlink bool `yaml:"disable_hyperlink"`
+
+	// MiddleclickPaste pastes the clipboard on middle click (like a Linux
+	// terminal). Set false to disable.
+	MiddleclickPaste bool `yaml:"middleclick_paste"`
+
 	// EnableGraphics loads the xterm.js image addon, enabling inline
 	// graphics via sixel and the iTerm2 inline image protocol. When false
 	// the decoder isn't loaded and sixel support is not advertised to
@@ -170,6 +178,8 @@ func Default() Config {
 		ScrollbackBytes:      256 * 1024,
 		FontSize:             14,
 		EnableGraphics:       true,
+		DisableHyperlink:     false,
+		MiddleclickPaste:     true,
 		Title:                "TtyServe",
 		CloseOnExit:          true,
 	}

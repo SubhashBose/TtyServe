@@ -53,6 +53,8 @@ func main() {
 	scrollback := flag.Int("scrollback_bytes", def.ScrollbackBytes, "server-side replay buffer per session")
 	fontSize := flag.Int("font_size", def.FontSize, "terminal font size in px")
 	enableGraphics := flag.Bool("enable_graphics", def.EnableGraphics, "inline graphics in the terminal (sixel + iTerm2 image protocol)")
+	disableHyperlink := flag.Bool("disable_hyperlink", def.DisableHyperlink, "turn off clickable links in the terminal")
+	middleclickPaste := flag.Bool("middleclick_paste", def.MiddleclickPaste, "paste clipboard on middle click")
 	title := flag.String("title", def.Title, "browser page title")
 	closeOnExit := flag.Bool("close_on_exit", def.CloseOnExit, "remove a session when its command exits")
 	flag.Parse()
@@ -124,6 +126,10 @@ func main() {
 			cfg.FontSize = *fontSize
 		case "enable_graphics":
 			cfg.EnableGraphics = *enableGraphics
+		case "disable_hyperlink":
+			cfg.DisableHyperlink = *disableHyperlink
+		case "middleclick_paste":
+			cfg.MiddleclickPaste = *middleclickPaste
 		case "title":
 			cfg.Title = *title
 		case "close_on_exit":
