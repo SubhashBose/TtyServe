@@ -56,7 +56,7 @@
       fontFamily: "Menlo, Consolas, monospace",
       fontSize: cfg.fontSize || 14,
       theme: { background: "#1e1e1e", foreground: "#cccccc" },
-      disableStdin: !cfg.writeEnabled,
+      disableStdin: cfg.readonly,
       scrollback: 10000,
     });
     const fit = new FitAddon.FitAddon();
@@ -219,7 +219,7 @@
     termsEl.appendChild(pane);
     term.open(pane); // renderer upgrade happens on first activation
 
-    if (cfg.writeEnabled) {
+    if (!cfg.readonly) {
       term.onData((d) => {
         if (entry.awaitRestart) {
           if (d === "\r") restartSession(entry);
@@ -247,7 +247,7 @@
       if (e.button === 1) e.preventDefault(); // suppress autoscroll
     });
     pane.addEventListener("auxclick", (e) => {
-      if (e.button !== 1 || !cfg.writeEnabled) return;
+      if (e.button !== 1 || cfg.readonly) return;
       e.preventDefault();
       if (navigator.clipboard && navigator.clipboard.readText) {
         navigator.clipboard.readText()
@@ -463,7 +463,9 @@
 
   async function addSession() {
     try {
-      const info = await api("POST", "api/sessions"); // empty title -> server default
+      // Forward the page query so url_arg/url_env apply to new tabs too;
+      // empty title -> server default.
+      const info = await api("POST", "api/sessions" + location.search);
       createTab(info);
       activate(info.id);
     } catch (e) {
@@ -471,16 +473,22 @@
     }
   }
 
-  // Reflect server-side title changes (auto cwd titles, renames from another
-  // window). Tabs being renamed locally are left alone.
-  async function syncTitles() {
+  // Reconcile with the server: update titles (auto cwd titles, renames from
+  // another window) and adopt sessions we have no tab for — e.g. when the
+  // page was loaded from a stale cache or another window created a tab.
+  async function syncSessions() {
     if (document.hidden) return;
     let list;
     try { list = await api("GET", "api/sessions"); } catch (e) { return; }
     for (const info of list) {
       const entry = panes.get(info.id);
-      if (entry && !entry.renaming && entry.titleEl.textContent !== info.title) {
-        entry.titleEl.textContent = info.title;
+      if (entry) {
+        if (!entry.renaming && entry.titleEl.textContent !== info.title) {
+          entry.titleEl.textContent = info.title;
+        }
+      } else if (cfg.multiSession) {
+        createTab(info);
+        if (!activeId) activate(info.id);
       }
     }
   }
@@ -495,7 +503,7 @@
       new ResizeObserver(() => fitActive()).observe(termsEl);
     }
     // Ephemeral mode has no stable identity across requests, so skip polling.
-    if (cfg.persistence) setInterval(syncTitles, 3000);
+    if (cfg.persistence) setInterval(syncSessions, 3000);
     // Cell metrics change once the terminal font finishes loading.
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(() => fitActive());

@@ -95,7 +95,8 @@ defaults. See `config.example.yaml` for the annotated file. Key options:
 | `users` | list of `{name, password}` for `user` mode |
 | `idle_timeout` | short-term session lifetime when disconnected |
 | `command` / `env` / `working_dir` | what each terminal runs; `command` is a full shell-style line, e.g. `"/usr/bin/tmux new -A -s main"` |
-| `write_enabled` | `false` = read-only terminals |
+| `readonly` | `true` = read-only terminals, no client input |
+| `url_arg` / `url_env` | URL query params become command args / env vars (mutually exclusive; security-sensitive) |
 | `max_clients_per_session` | shared-viewer cap (0 = unlimited) |
 | `scrollback_bytes` | server-side replay buffer per session |
 | `font_size` | terminal font size in px (default 14) |
@@ -160,6 +161,10 @@ websocket at `/ws?session=<id>` bridges that PTY to xterm.js in the browser.
   that handles auth.
 - The cookie signing secret is random per process, so short-term cookies are
   invalidated on restart (acceptable for short-lived sessions).
+- `url_arg` / `url_env` let any client who can load the page append arguments
+  or environment variables to the spawned command. Treat them as remote
+  command-line access: enable only behind authentication you trust, and never
+  with `allow_origins: ["*"]`.
 - `proxy_header` mode trusts the header blindly — it is only safe when clients
   cannot reach ttyserve directly. Bind to a `unix://` socket or `127.0.0.1`,
   and configure the proxy to strip/overwrite the header on incoming requests.

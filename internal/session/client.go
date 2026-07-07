@@ -20,6 +20,11 @@ type Session struct {
 	// userTitled is set once the user chooses a title (explicit title on
 	// create, or a rename). It pins the title: auto cwd-tracking stops.
 	userTitled bool
+
+	// extraArgs/extraEnv are per-session spawn parameters from the URL
+	// (url_arg / url_env modes), kept so a restart respawns identically.
+	// Immutable after creation.
+	extraArgs, extraEnv []string
 }
 
 // Term returns the underlying terminal.

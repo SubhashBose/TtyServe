@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -44,6 +45,7 @@ type Server struct {
 	upgrader websocket.Upgrader
 	tmpl     *template.Template
 	static   map[string]*staticAsset
+	assetVer string // combined hash of all static assets, for cache busting
 }
 
 // New constructs a Server.
@@ -60,12 +62,26 @@ func New(cfg config.Config, a *auth.Authenticator, mgr *session.Manager) (*Serve
 	if err != nil {
 		return nil, err
 	}
+	// Version stamp for asset URLs: any asset change changes every URL, so
+	// a fresh page can never run against stale cached scripts. Hash in
+	// sorted order — map iteration is random and the stamp must be stable
+	// across restarts of the same binary.
+	names := make([]string, 0, len(static))
+	for name := range static {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	ver := sha256.New()
+	for _, name := range names {
+		ver.Write([]byte(static[name].etag))
+	}
 	return &Server{
-		cfg:    cfg,
-		auth:   a,
-		mgr:    mgr,
-		tmpl:   tmpl,
-		static: static,
+		cfg:      cfg,
+		auth:     a,
+		mgr:      mgr,
+		tmpl:     tmpl,
+		static:   static,
+		assetVer: hex.EncodeToString(ver.Sum(nil)[:6]),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -207,14 +223,51 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) (*session.Clien
 	if id.SetCookie != nil {
 		http.SetCookie(w, id.SetCookie)
 	}
-	return s.mgr.Client(id.Key), true
+	cl := s.mgr.Client(id.Key)
+	// Any authenticated request counts as activity: the reaper should only
+	// collect clients with no connection AND no requests for idle_timeout.
+	// (Normally the websocket keeps clients alive; this covers the windows
+	// where the socket is down but the page is still polling.)
+	s.mgr.Touch(cl)
+	return cl, true
+}
+
+// urlSpawnParams extracts per-session spawn parameters from the request
+// query when url_arg / url_env is enabled. Parameter order is preserved
+// (url.Values would randomize it). In url_arg mode "?a&b=5" yields args
+// ["a", "b=5"]; in url_env mode env ["a=", "b=5"].
+func (s *Server) urlSpawnParams(r *http.Request) (args, env []string) {
+	if !s.cfg.URLArg && !s.cfg.URLEnv {
+		return nil, nil
+	}
+	for _, tok := range strings.Split(r.URL.RawQuery, "&") {
+		if tok == "" {
+			continue
+		}
+		k, v, _ := strings.Cut(tok, "=")
+		ku, err1 := url.QueryUnescape(k)
+		vu, err2 := url.QueryUnescape(v)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		if s.cfg.URLArg {
+			arg := ku
+			if strings.Contains(tok, "=") {
+				arg = ku + "=" + vu
+			}
+			args = append(args, arg)
+		} else if ku != "" {
+			env = append(env, ku+"="+vu)
+		}
+	}
+	return args, env
 }
 
 type pageData struct {
 	Title              string
 	MultiSession       bool
 	TabBarPosition     string
-	WriteEnabled       bool
+	Readonly           bool
 	SessionPersistence bool
 	PersistenceMode    string
 	FontSize           int
@@ -222,6 +275,8 @@ type pageData struct {
 	// Sessions is inlined into the page so the frontend can build tabs and
 	// open websockets immediately, without a follow-up API round trip.
 	Sessions []session.SessionInfo
+	// V is the asset version appended to static URLs (cache busting).
+	V string
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -234,21 +289,28 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Guarantee at least one session exists on first load.
-	if _, err := s.mgr.EnsureDefaultSession(cl); err != nil {
+	args, env := s.urlSpawnParams(r)
+	if _, err := s.mgr.EnsureDefaultSession(cl, args, env); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// The page embeds the client's session list and mints cookies: it is
+	// personalized state and must never be served from any cache — a stale
+	// copy carries dead session ids and the frontend would abandon the
+	// client's real sessions.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = s.tmpl.Execute(w, pageData{
 		Title:              s.cfg.Title,
 		MultiSession:       s.cfg.MultiSession,
 		TabBarPosition:     s.cfg.TabBarPosition,
-		WriteEnabled:       s.cfg.WriteEnabled,
+		Readonly:           s.cfg.Readonly,
 		SessionPersistence: s.cfg.SessionPersistence,
 		PersistenceMode:    string(s.cfg.PersistenceMode),
 		FontSize:           s.cfg.FontSize,
 		EnableGraphics:     s.cfg.EnableGraphics,
 		Sessions:           cl.List(),
+		V:                  s.assetVer,
 	})
 }
 
@@ -270,7 +332,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			Title string `json:"title"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		sess, err := s.mgr.CreateSession(cl, capTitle(strings.TrimSpace(body.Title)))
+		args, env := s.urlSpawnParams(r)
+		sess, err := s.mgr.CreateSession(cl, capTitle(strings.TrimSpace(body.Title)), args, env)
 		if err == session.ErrTooManySessions {
 			http.Error(w, "maximum allowed session limit reached", http.StatusForbidden)
 			return
@@ -368,9 +431,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// No session specified: use/create the default.
+		// No session specified: use/create the default. No URL spawn params
+		// here — the /ws query carries protocol fields, not user parameters.
 		var err error
-		sess, err = s.mgr.EnsureDefaultSession(cl)
+		sess, err = s.mgr.EnsureDefaultSession(cl, nil, nil)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

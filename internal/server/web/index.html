@@ -2,9 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<script>
+  // The app uses relative URLs, so its path must end in "/". Behind
+  // prefix-stripping proxies (e.g. /code/proxy/7681) the server can't see
+  // the original path and cannot redirect — normalize here, before any
+  // asset is requested. Direct access at "/" is a no-op.
+  if (!location.pathname.endsWith("/")) {
+    location.replace(location.pathname + "/" + location.search + location.hash);
+  }
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>{{.Title}}</title>
-<link rel="stylesheet" href="static/xterm.css" />
+<link rel="stylesheet" href="static/xterm.css?v={{.V}}" />
 <style>
   :root {
     --bg: #1e1e1e;
@@ -69,7 +78,7 @@
   window.TTYSERVE = {
     multiSession: {{.MultiSession}},
     tabBarPosition: "{{.TabBarPosition}}",
-    writeEnabled: {{.WriteEnabled}},
+    readonly: {{.Readonly}},
     persistence: {{.SessionPersistence}},
     persistenceMode: "{{.PersistenceMode}}",
     fontSize: {{.FontSize}},
@@ -77,10 +86,10 @@
     sessions: {{.Sessions}}
   };
 </script>
-<script src="static/xterm.js"></script>
-<script src="static/xterm-addon-fit.js"></script>
-<script src="static/xterm-addon-canvas.js"></script>
-{{if .EnableGraphics}}<script src="static/xterm-addon-image.js"></script>
-{{end}}<script src="static/app.js"></script>
+<script src="static/xterm.js?v={{.V}}"></script>
+<script src="static/xterm-addon-fit.js?v={{.V}}"></script>
+<script src="static/xterm-addon-canvas.js?v={{.V}}"></script>
+{{if .EnableGraphics}}<script src="static/xterm-addon-image.js?v={{.V}}"></script>
+{{end}}<script src="static/app.js?v={{.V}}"></script>
 </body>
 </html>

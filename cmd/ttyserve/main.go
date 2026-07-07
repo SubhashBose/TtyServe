@@ -45,7 +45,9 @@ func main() {
 	allowOrigins := flag.String("allow_origins", strings.Join(def.AllowOrigins, ","), "extra websocket Origins allowed, comma-separated ('*' = any)")
 	tlsCert := flag.String("tls_cert_file", def.TLSCertFile, "TLS certificate file (enables HTTPS)")
 	tlsKey := flag.String("tls_key_file", def.TLSKeyFile, "TLS key file")
-	writeEnabled := flag.Bool("write_enabled", def.WriteEnabled, "allow keyboard input (false = read-only terminals)")
+	readonly := flag.Bool("readonly", def.Readonly, "read-only terminals: no client input accepted")
+	urlArg := flag.Bool("url_arg", def.URLArg, "append URL query parameters to the command arguments (see security notes)")
+	urlEnv := flag.Bool("url_env", def.URLEnv, "turn URL query parameters into extra environment variables (see security notes)")
 	maxClients := flag.Int("max_clients_per_session", def.MaxClientsPerSession, "concurrent viewers per session (0 = unlimited)")
 	pingInterval := flag.Duration("ping_interval", def.PingInterval, "websocket keepalive ping period")
 	scrollback := flag.Int("scrollback_bytes", def.ScrollbackBytes, "server-side replay buffer per session")
@@ -106,8 +108,12 @@ func main() {
 			cfg.TLSCertFile = *tlsCert
 		case "tls_key_file":
 			cfg.TLSKeyFile = *tlsKey
-		case "write_enabled":
-			cfg.WriteEnabled = *writeEnabled
+		case "readonly":
+			cfg.Readonly = *readonly
+		case "url_arg":
+			cfg.URLArg = *urlArg
+		case "url_env":
+			cfg.URLEnv = *urlEnv
 		case "max_clients_per_session":
 			cfg.MaxClientsPerSession = *maxClients
 		case "ping_interval":

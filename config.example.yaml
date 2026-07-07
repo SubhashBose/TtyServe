@@ -14,8 +14,13 @@ port: 7681                   # TCP port, ignored for unix sockets (default: 7681
 #   e.g. command: "/usr/bin/tmux new -A -s main"
 #        command: "/bin/sh -c 'echo hi && exec bash'"
 command: "/bin/bash"
-working_dir: "/home/subhash" # (default: "" = server's cwd)
+working_dir: "" # (default: "" = server's cwd)
 env: []                      # e.g. ["FOO=bar"] (default: none)
+
+# --- Multi-session / tabs ---
+multi_session: true          # (default: true)
+max_sessions_per_client: 0   # 0 = unlimited (default: 0)
+tab_bar_position: "top"      # "top" or "right" (default: top)
 
 # --- Persistence ---
 # When false, a session is bound to a single websocket and dies on disconnect.
@@ -32,11 +37,6 @@ persistence_mode: "short_term"  # (default: short_term)
 
 # --- Proxy header identity (persistence_mode: proxy_header) ---
 proxy_header_name: "X-Forwarded-User"  # (default: X-Forwarded-User)
-
-# --- Multi-session / tabs ---
-multi_session: true          # (default: true)
-max_sessions_per_client: 0   # 0 = unlimited (default: 0)
-tab_bar_position: "top"      # "top" or "right" (default: top)
 
 # --- User auth (persistence_mode: user) ---
 users:                       # (default: none; required for 'user' mode)
@@ -60,7 +60,15 @@ tls_cert_file: ""            # (default: "" = plain HTTP)
 tls_key_file: ""
 
 # --- Behaviour ---
-write_enabled: true          # false = read-only terminals (default: true)
+readonly: false              # true = read-only terminals, no client input (default: false)
+
+# URL query parameters as spawn parameters (default: both false; mutually
+# exclusive). SECURITY: either one lets any client who can open the page
+# influence the spawned command — only enable behind trusted access control.
+#   url_arg: true -> /?arg1&arg2=5 runs "command arg1 arg2=5"
+#   url_env: true -> /?arg1&arg2=5 runs command with env arg1= and arg2=5
+url_arg: false
+url_env: false
 max_clients_per_session: 0   # 0 = unlimited shared viewers (default: 0)
 ping_interval: 20s           # websocket keepalive (default: 20s)
 scrollback_bytes: 262144     # server-side replay buffer per session (default: 262144)

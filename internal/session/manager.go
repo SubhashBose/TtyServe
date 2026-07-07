@@ -63,12 +63,13 @@ func (m *Manager) GetClient(id string) (*Client, bool) {
 	return c, ok
 }
 
-// CreateSession spawns a new terminal/tab for a client.
-func (m *Manager) CreateSession(c *Client, title string) (*Session, error) {
+// CreateSession spawns a new terminal/tab for a client. extraArgs/extraEnv
+// are per-session additions from the URL (url_arg / url_env modes).
+func (m *Manager) CreateSession(c *Client, title string, extraArgs, extraEnv []string) (*Session, error) {
 	if m.cfg.MaxSessionsPerClient > 0 && c.Count() >= m.cfg.MaxSessionsPerClient {
 		return nil, ErrTooManySessions
 	}
-	term, err := m.spawnTerminal()
+	term, err := m.spawnTerminal(extraArgs, extraEnv)
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +85,8 @@ func (m *Manager) CreateSession(c *Client, title string) (*Session, error) {
 		Created:    time.Now(),
 		terminal:   term,
 		userTitled: userTitled,
+		extraArgs:  extraArgs,
+		extraEnv:   extraEnv,
 	}
 	c.add(s)
 
@@ -97,11 +100,13 @@ func (m *Manager) CreateSession(c *Client, title string) (*Session, error) {
 	return s, nil
 }
 
-func (m *Manager) spawnTerminal() (*terminal.Terminal, error) {
+func (m *Manager) spawnTerminal(extraArgs, extraEnv []string) (*terminal.Terminal, error) {
+	args := append(append([]string{}, m.cfg.Args...), extraArgs...)
+	env := append(append([]string{}, m.cfg.Env...), extraEnv...)
 	return terminal.New(terminal.Options{
 		Command:         m.cfg.Command,
-		Args:            m.cfg.Args,
-		Env:             m.cfg.Env,
+		Args:            args,
+		Env:             env,
 		WorkingDir:      m.cfg.WorkingDir,
 		ScrollbackBytes: m.cfg.ScrollbackBytes,
 	})
@@ -114,7 +119,9 @@ func (m *Manager) RestartSession(c *Client, id string) (*Session, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
-	restarted, err := s.restartIfExited(m.spawnTerminal)
+	restarted, err := s.restartIfExited(func() (*terminal.Terminal, error) {
+		return m.spawnTerminal(s.extraArgs, s.extraEnv)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -139,13 +146,13 @@ func (m *Manager) CloseSession(c *Client, id string) error {
 
 // EnsureDefaultSession guarantees a client has at least one session and returns
 // the first one. Useful for single-session mode and first connect.
-func (m *Manager) EnsureDefaultSession(c *Client) (*Session, error) {
+func (m *Manager) EnsureDefaultSession(c *Client, extraArgs, extraEnv []string) (*Session, error) {
 	list := c.List()
 	if len(list) > 0 {
 		s, _ := c.Get(list[0].ID)
 		return s, nil
 	}
-	return m.CreateSession(c, "")
+	return m.CreateSession(c, "", extraArgs, extraEnv)
 }
 
 // titleUpdater keeps auto-titled sessions named after their shell's current

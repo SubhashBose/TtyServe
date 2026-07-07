@@ -56,3 +56,21 @@ func TestValidateSplitsCommand(t *testing.T) {
 		t.Error("Validate: expected error for blank command")
 	}
 }
+
+func TestValidateOptionInteractions(t *testing.T) {
+	cfg := Default()
+	cfg.URLArg = true
+	cfg.URLEnv = true
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate: url_arg + url_env should be rejected")
+	}
+
+	cfg = Default()
+	cfg.Readonly = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if !cfg.Readonly {
+		t.Error("Validate must not reset Readonly")
+	}
+}

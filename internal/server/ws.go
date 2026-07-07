@@ -119,7 +119,7 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 		payload := data[1:]
 		switch op {
 		case msgInput:
-			if s.cfg.WriteEnabled {
+			if !s.cfg.Readonly {
 				_, _ = term.Write(payload)
 			}
 		case msgResize:

@@ -107,9 +107,19 @@ type Config struct {
 	TLSKeyFile  string `yaml:"tls_key_file"`
 
 	// --- Behaviour, ttyd-inspired ---
-	// WriteEnabled allows client keyboard input. When false, terminals are
-	// read-only (view/share mode).
-	WriteEnabled bool `yaml:"write_enabled"`
+	// Readonly disables client keyboard input: terminals become
+	// view/share-only.
+	Readonly bool `yaml:"readonly"`
+
+	// URLArg appends the page URL's query parameters to the command's
+	// arguments: /?arg1&arg2=5 runs "command arg1 arg2=5". SECURITY: this
+	// lets any client who can reach the server influence the command line.
+	URLArg bool `yaml:"url_arg"`
+
+	// URLEnv turns the page URL's query parameters into extra environment
+	// variables: /?arg1&arg2=5 runs the command with arg1= and arg2=5 set.
+	// Mutually exclusive with URLArg. Same security caveat.
+	URLEnv bool `yaml:"url_env"`
 
 	// MaxClientsPerSession limits concurrent websockets attached to one
 	// session (allows shared viewing). 0 = unlimited.
@@ -154,7 +164,7 @@ func Default() Config {
 		IdleTimeout:          5 * time.Minute,
 		CookieName:           "ttyserve_session",
 		CookieSecure:         false,
-		WriteEnabled:         true,
+		Readonly:             false,
 		MaxClientsPerSession: 0,
 		PingInterval:         20 * time.Second,
 		ScrollbackBytes:      256 * 1024,
@@ -242,6 +252,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("port must be 1-65535, got %d", c.Port)
+	}
+	if c.URLArg && c.URLEnv {
+		return fmt.Errorf("url_arg and url_env are mutually exclusive")
 	}
 	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
 		return fmt.Errorf("tls_cert_file and tls_key_file must both be set or both empty")
