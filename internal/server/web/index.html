@@ -34,6 +34,7 @@
     border-radius: 4px; padding: 5px 10px; cursor: pointer; white-space: nowrap;
     display: flex; align-items: center; gap: 6px; font-size: 13px; user-select: none; }
   .tab.active { background: var(--tab-active); border-color: var(--accent); }
+  .tab.dragging { opacity: .5; }
   .tab::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
     background: #4ec9b0; flex: none; }
   .tab.disconnected::before { background: #f48771; }
@@ -71,11 +72,15 @@
     writeEnabled: {{.WriteEnabled}},
     persistence: {{.SessionPersistence}},
     persistenceMode: "{{.PersistenceMode}}",
-    fontSize: {{.FontSize}}
+    fontSize: {{.FontSize}},
+    graphics: {{.EnableGraphics}},
+    sessions: {{.Sessions}}
   };
 </script>
 <script src="static/xterm.js"></script>
 <script src="static/xterm-addon-fit.js"></script>
-<script src="static/app.js"></script>
+<script src="static/xterm-addon-canvas.js"></script>
+{{if .EnableGraphics}}<script src="static/xterm-addon-image.js"></script>
+{{end}}<script src="static/app.js"></script>
 </body>
 </html>

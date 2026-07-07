@@ -1,13 +1,20 @@
 package server
 
 import (
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"html/template"
-	"io/fs"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
+	"path"
+	"strconv"
 	"strings"
 
 	"ttyserve/internal/auth"
@@ -20,6 +27,15 @@ import (
 //go:embed web
 var webFS embed.FS
 
+// staticAsset is one embedded frontend file, pre-hashed and pre-compressed
+// at startup so reloads can be answered with 304s or gzip bodies.
+type staticAsset struct {
+	body  []byte
+	gz    []byte // nil when compression doesn't help
+	etag  string
+	ctype string
+}
+
 // Server ties config, auth, and the session manager to HTTP handlers.
 type Server struct {
 	cfg      config.Config
@@ -27,6 +43,7 @@ type Server struct {
 	mgr      *session.Manager
 	upgrader websocket.Upgrader
 	tmpl     *template.Template
+	static   map[string]*staticAsset
 }
 
 // New constructs a Server.
@@ -39,11 +56,16 @@ func New(cfg config.Config, a *auth.Authenticator, mgr *session.Manager) (*Serve
 	if err != nil {
 		return nil, err
 	}
+	static, err := loadStatic()
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
-		cfg:  cfg,
-		auth: a,
-		mgr:  mgr,
-		tmpl: tmpl,
+		cfg:    cfg,
+		auth:   a,
+		mgr:    mgr,
+		tmpl:   tmpl,
+		static: static,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
@@ -53,6 +75,78 @@ func New(cfg config.Config, a *auth.Authenticator, mgr *session.Manager) (*Serve
 			CheckOrigin: func(r *http.Request) bool { return originAllowed(cfg, r) },
 		},
 	}, nil
+}
+
+// loadStatic reads every embedded static file once, computing its ETag and a
+// gzipped copy. The frontend is a fixed set of small files, so holding both
+// forms in memory is cheap (~½ MB) and makes reloads fast even without a
+// caching proxy in front.
+func loadStatic() (map[string]*staticAsset, error) {
+	entries, err := webFS.ReadDir("web/static")
+	if err != nil {
+		return nil, err
+	}
+	assets := make(map[string]*staticAsset, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		body, err := webFS.ReadFile("web/static/" + e.Name())
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(body)
+		var buf bytes.Buffer
+		zw, _ := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+		_, _ = zw.Write(body)
+		_ = zw.Close()
+		gz := buf.Bytes()
+		if len(gz) >= len(body) {
+			gz = nil
+		}
+		ctype := mime.TypeByExtension(path.Ext(e.Name()))
+		if ctype == "" {
+			ctype = "application/octet-stream"
+		}
+		assets[e.Name()] = &staticAsset{
+			body:  body,
+			gz:    gz,
+			etag:  fmt.Sprintf("%q", hex.EncodeToString(sum[:8])),
+			ctype: ctype,
+		}
+	}
+	return assets, nil
+}
+
+// handleStatic serves the pre-processed embedded assets with ETag
+// revalidation (304 on reload) and gzip.
+func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.static[strings.TrimPrefix(r.URL.Path, "/static/")]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", a.ctype)
+	h.Set("ETag", a.etag)
+	// no-cache = cache but revalidate; assets change with the binary, so a
+	// cheap 304 beats both re-downloading and going stale after an upgrade.
+	h.Set("Cache-Control", "public, no-cache")
+	h.Set("Vary", "Accept-Encoding")
+	if r.Header.Get("If-None-Match") == a.etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	body := a.body
+	if a.gz != nil && strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		h.Set("Content-Encoding", "gzip")
+		body = a.gz
+	}
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(body)
 }
 
 // originAllowed permits requests with no Origin header (non-browser clients),
@@ -79,12 +173,11 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// Static assets (xterm.js etc.) under /static/.
-	staticFS, _ := fs.Sub(webFS, "web/static")
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+	mux.HandleFunc("/static/", s.handleStatic)
 
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/sessions", s.handleSessions)     // GET list, POST create
-	mux.HandleFunc("/api/sessions/", s.handleSessionItem) // PATCH rename, DELETE close
+	mux.HandleFunc("/api/sessions/", s.handleSessionItem) // PATCH rename, DELETE close, POST {id}/restart
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -99,6 +192,12 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) (*session.Clien
 	id, err := s.auth.Authenticate(r)
 	if err == auth.ErrUnauthorized {
 		s.auth.WriteUnauthorized(w)
+		return nil, false
+	}
+	if err == auth.ErrNoIdentityHeader {
+		// No basic-auth challenge here: the proxy, not the browser, is
+		// supposed to supply the identity.
+		http.Error(w, err.Error(), http.StatusForbidden)
 		return nil, false
 	}
 	if err != nil {
@@ -119,6 +218,10 @@ type pageData struct {
 	SessionPersistence bool
 	PersistenceMode    string
 	FontSize           int
+	EnableGraphics     bool
+	// Sessions is inlined into the page so the frontend can build tabs and
+	// open websockets immediately, without a follow-up API round trip.
+	Sessions []session.SessionInfo
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -144,6 +247,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		SessionPersistence: s.cfg.SessionPersistence,
 		PersistenceMode:    string(s.cfg.PersistenceMode),
 		FontSize:           s.cfg.FontSize,
+		EnableGraphics:     s.cfg.EnableGraphics,
+		Sessions:           cl.List(),
 	})
 }
 
@@ -167,7 +272,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		sess, err := s.mgr.CreateSession(cl, capTitle(strings.TrimSpace(body.Title)))
 		if err == session.ErrTooManySessions {
-			http.Error(w, err.Error(), http.StatusForbidden)
+			http.Error(w, "maximum allowed session limit reached", http.StatusForbidden)
 			return
 		}
 		if err != nil {
@@ -186,14 +291,47 @@ func (s *Server) handleSessionItem(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+	rest := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+	id, action, hasAction := strings.Cut(rest, "/")
 	if id == "" {
 		http.NotFound(w, r)
+		return
+	}
+	// PUT /api/sessions/order {order: [ids]} -> rearrange tabs. Session ids
+	// are UUIDs, so "order" cannot collide with one.
+	if id == "order" && !hasAction {
+		if r.Method != http.MethodPut {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			Order []string `json:"order"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "order required", http.StatusBadRequest)
+			return
+		}
+		cl.SetOrder(body.Order)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	sess, exists := cl.Get(id)
 	if !exists {
 		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if hasAction {
+		// POST /api/sessions/{id}/restart: respawn an exited command
+		// (close_on_exit=false keeps the session around after exit).
+		if action == "restart" && r.Method == http.MethodPost {
+			if _, err := s.mgr.RestartSession(cl, id); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusOK, session.SessionInfo{ID: sess.ID, Title: sess.GetTitle()})
+			return
+		}
+		http.NotFound(w, r)
 		return
 	}
 	switch r.Method {

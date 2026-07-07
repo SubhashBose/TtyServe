@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -18,6 +21,11 @@ const (
 	// PersistShortTerm ties sessions to a browser cookie. Sessions are reaped
 	// after IdleTimeout of no active websocket connection.
 	PersistShortTerm PersistenceMode = "short_term"
+	// PersistProxyHeader ties sessions to the value of a request header set
+	// by a trusted reverse proxy (e.g. X-Forwarded-User). Like "user" mode,
+	// but authentication is the proxy's job. Only safe when clients cannot
+	// reach ttyserve directly — bind to unix:// or 127.0.0.1.
+	PersistProxyHeader PersistenceMode = "proxy_header"
 )
 
 // User is a single basic-auth credential.
@@ -28,8 +36,14 @@ type User struct {
 
 // Config is the full application configuration.
 type Config struct {
-	// Listen address, e.g. ":7681" or "127.0.0.1:7681".
+	// Listen is what to bind: an IP address ("127.0.0.1", "::1"), an
+	// interface name ("eth0"), or a unix socket ("unix:///run/tty.sock").
+	// Empty = all interfaces. TLS applies to any listener whenever
+	// tls_cert_file/tls_key_file are configured.
 	Listen string `yaml:"listen"`
+
+	// Port is the TCP port to listen on (ignored for unix sockets).
+	Port int `yaml:"port"`
 
 	// Command run for each terminal session, as a single shell-style line
 	// (e.g. "/usr/bin/tmux new -A -s main"). Quote arguments that contain
@@ -66,6 +80,10 @@ type Config struct {
 
 	// AuthRealm is the basic-auth realm shown to browsers.
 	AuthRealm string `yaml:"auth_realm"`
+
+	// --- Proxy header identity (PersistProxyHeader) ---
+	// ProxyHeaderName is the request header whose value identifies the user.
+	ProxyHeaderName string `yaml:"proxy_header_name"`
 
 	// --- Short term sessions ---
 	// IdleTimeout is how long a short-term session survives with no active
@@ -107,6 +125,12 @@ type Config struct {
 	// FontSize is the terminal font size in CSS pixels.
 	FontSize int `yaml:"font_size"`
 
+	// EnableGraphics loads the xterm.js image addon, enabling inline
+	// graphics via sixel and the iTerm2 inline image protocol. When false
+	// the decoder isn't loaded and sixel support is not advertised to
+	// applications.
+	EnableGraphics bool `yaml:"enable_graphics"`
+
 	// Title is the browser/page title.
 	Title string `yaml:"title"`
 
@@ -117,7 +141,8 @@ type Config struct {
 // Default returns a Config populated with reasonable defaults.
 func Default() Config {
 	return Config{
-		Listen:               ":7681",
+		Listen:               "", // all interfaces
+		Port:                 7681,
 		Command:              defaultShell(),
 		SessionPersistence:   true,
 		PersistenceMode:      PersistShortTerm,
@@ -125,6 +150,7 @@ func Default() Config {
 		MaxSessionsPerClient: 0,
 		TabBarPosition:       "top",
 		AuthRealm:            "ttyserve",
+		ProxyHeaderName:      "X-Forwarded-User",
 		IdleTimeout:          5 * time.Minute,
 		CookieName:           "ttyserve_session",
 		CookieSecure:         false,
@@ -133,6 +159,7 @@ func Default() Config {
 		PingInterval:         20 * time.Second,
 		ScrollbackBytes:      256 * 1024,
 		FontSize:             14,
+		EnableGraphics:       true,
 		Title:                "TtyServe",
 		CloseOnExit:          true,
 	}
@@ -145,11 +172,13 @@ func defaultShell() string {
 	return "/bin/bash"
 }
 
-// Load reads a YAML config file, overlaying it on top of defaults.
+// Load reads a YAML config file, overlaying it on top of defaults. It does
+// NOT validate: the caller applies any CLI overrides first, then calls
+// Validate once.
 func Load(path string) (Config, error) {
 	cfg := Default()
 	if path == "" {
-		return cfg, cfg.Validate()
+		return cfg, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -158,7 +187,7 @@ func Load(path string) (Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
-	return cfg, cfg.Validate()
+	return cfg, nil
 }
 
 // Validate checks config invariants and normalizes a few fields.
@@ -189,10 +218,14 @@ func (c *Config) Validate() error {
 			if c.IdleTimeout <= 0 {
 				return fmt.Errorf("idle_timeout must be > 0 for short_term mode")
 			}
+		case PersistProxyHeader:
+			if c.ProxyHeaderName == "" {
+				c.ProxyHeaderName = "X-Forwarded-User"
+			}
 		case "":
 			c.PersistenceMode = PersistShortTerm
 		default:
-			return fmt.Errorf("persistence_mode must be 'user' or 'short_term', got %q", c.PersistenceMode)
+			return fmt.Errorf("persistence_mode must be 'user', 'short_term' or 'proxy_header', got %q", c.PersistenceMode)
 		}
 	}
 	if c.CookieName == "" {
@@ -203,6 +236,12 @@ func (c *Config) Validate() error {
 	}
 	if c.FontSize <= 0 {
 		c.FontSize = 14
+	}
+	if c.Port == 0 {
+		c.Port = 7681
+	}
+	if c.Port < 1 || c.Port > 65535 {
+		return fmt.Errorf("port must be 1-65535, got %d", c.Port)
 	}
 	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
 		return fmt.Errorf("tls_cert_file and tls_key_file must both be set or both empty")
@@ -261,4 +300,63 @@ func splitCommand(s string) ([]string, error) {
 // TLSEnabled reports whether TLS files are configured.
 func (c *Config) TLSEnabled() bool {
 	return c.TLSCertFile != "" && c.TLSKeyFile != ""
+}
+
+// ListenSpec describes one listener to open.
+type ListenSpec struct {
+	Network string // "tcp" or "unix"
+	Address string // host:port, or socket path
+	TLS     bool   // serve TLS on this listener
+}
+
+// ListenSpecs resolves Listen+Port to the listeners to bind: all interfaces
+// when Listen is empty, the address itself for an IP, every address of a
+// named interface, or a unix socket for unix://<path>. TLS is decided
+// uniformly by the TLS config, never by the listen syntax.
+func (c *Config) ListenSpecs() ([]ListenSpec, error) {
+	tls := c.TLSEnabled()
+	if path, ok := strings.CutPrefix(c.Listen, "unix://"); ok {
+		if path == "" {
+			return nil, fmt.Errorf("listen: unix:// requires a socket path")
+		}
+		return []ListenSpec{{Network: "unix", Address: path, TLS: tls}}, nil
+	}
+	if strings.HasPrefix(c.Listen, "unixs://") {
+		return nil, fmt.Errorf("listen: unixs:// is not a thing; use unix:// — TLS is enabled by tls_cert_file/tls_key_file")
+	}
+
+	port := strconv.Itoa(c.Port)
+	if c.Listen == "" {
+		return []ListenSpec{{Network: "tcp", Address: ":" + port, TLS: tls}}, nil
+	}
+	if ip := net.ParseIP(c.Listen); ip != nil {
+		return []ListenSpec{{Network: "tcp", Address: net.JoinHostPort(c.Listen, port), TLS: tls}}, nil
+	}
+	if _, _, err := net.SplitHostPort(c.Listen); err == nil {
+		return nil, fmt.Errorf("listen %q looks like host:port; put the address/interface in 'listen' and the port in 'port'", c.Listen)
+	}
+	ifi, err := net.InterfaceByName(c.Listen)
+	if err != nil {
+		return nil, fmt.Errorf("listen: %q is neither an IP address, an interface name, nor a unix:// socket", c.Listen)
+	}
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return nil, fmt.Errorf("listen: addresses of %s: %w", c.Listen, err)
+	}
+	var out []ListenSpec
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		host := ipn.IP.String()
+		if ipn.IP.To4() == nil && ipn.IP.IsLinkLocalUnicast() {
+			host += "%" + c.Listen // link-local v6 needs the zone
+		}
+		out = append(out, ListenSpec{Network: "tcp", Address: net.JoinHostPort(host, port), TLS: tls})
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("listen: interface %s has no usable addresses", c.Listen)
+	}
+	return out, nil
 }

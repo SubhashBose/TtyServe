@@ -68,13 +68,7 @@ func (m *Manager) CreateSession(c *Client, title string) (*Session, error) {
 	if m.cfg.MaxSessionsPerClient > 0 && c.Count() >= m.cfg.MaxSessionsPerClient {
 		return nil, ErrTooManySessions
 	}
-	term, err := terminal.New(terminal.Options{
-		Command:         m.cfg.Command,
-		Args:            m.cfg.Args,
-		Env:             m.cfg.Env,
-		WorkingDir:      m.cfg.WorkingDir,
-		ScrollbackBytes: m.cfg.ScrollbackBytes,
-	})
+	term, err := m.spawnTerminal()
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +89,37 @@ func (m *Manager) CreateSession(c *Client, title string) (*Session, error) {
 
 	// If configured to remove sessions when the shell exits, watch for it.
 	if m.cfg.CloseOnExit {
+		go func() {
+			<-term.Exited()
+			c.remove(s.ID)
+		}()
+	}
+	return s, nil
+}
+
+func (m *Manager) spawnTerminal() (*terminal.Terminal, error) {
+	return terminal.New(terminal.Options{
+		Command:         m.cfg.Command,
+		Args:            m.cfg.Args,
+		Env:             m.cfg.Env,
+		WorkingDir:      m.cfg.WorkingDir,
+		ScrollbackBytes: m.cfg.ScrollbackBytes,
+	})
+}
+
+// RestartSession spawns a fresh terminal for a session whose command has
+// exited (the close_on_exit=false case). No-op if it is still running.
+func (m *Manager) RestartSession(c *Client, id string) (*Session, error) {
+	s, ok := c.Get(id)
+	if !ok {
+		return nil, ErrNotFound
+	}
+	restarted, err := s.restartIfExited(m.spawnTerminal)
+	if err != nil {
+		return nil, err
+	}
+	if restarted && m.cfg.CloseOnExit {
+		term := s.Term()
 		go func() {
 			<-term.Exited()
 			c.remove(s.ID)

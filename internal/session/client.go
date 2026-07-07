@@ -23,7 +23,30 @@ type Session struct {
 }
 
 // Term returns the underlying terminal.
-func (s *Session) Term() *terminal.Terminal { return s.terminal }
+func (s *Session) Term() *terminal.Terminal {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.terminal
+}
+
+// restartIfExited swaps in a fresh terminal if the current one's command has
+// exited. Returns whether a restart happened. The check and swap are atomic
+// so concurrent restart requests can't spawn two terminals.
+func (s *Session) restartIfExited(spawn func() (*terminal.Terminal, error)) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	select {
+	case <-s.terminal.Exited():
+	default:
+		return false, nil // still running
+	}
+	t, err := spawn()
+	if err != nil {
+		return false, err
+	}
+	s.terminal = t
+	return true, nil
+}
 
 // Rename sets the tab title and pins it against auto-titling.
 func (s *Session) Rename(title string) {
@@ -51,7 +74,7 @@ func (s *Session) GetTitle() string {
 }
 
 // Close terminates the session's terminal.
-func (s *Session) Close() { s.terminal.Close() }
+func (s *Session) Close() { s.Term().Close() }
 
 // Client owns a set of sessions belonging to one identity (a basic-auth user
 // or a short-term cookie holder).
@@ -106,6 +129,27 @@ func (c *Client) Sessions() []*Session {
 		}
 	}
 	return out
+}
+
+// SetOrder rearranges the tab order. Unknown ids are dropped; sessions not
+// mentioned keep their relative order at the end.
+func (c *Client) SetOrder(ids []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	seen := make(map[string]bool, len(ids))
+	order := make([]string, 0, len(c.order))
+	for _, id := range ids {
+		if _, ok := c.sess[id]; ok && !seen[id] {
+			order = append(order, id)
+			seen[id] = true
+		}
+	}
+	for _, id := range c.order {
+		if !seen[id] {
+			order = append(order, id)
+		}
+	}
+	c.order = order
 }
 
 // Get returns a session by id.

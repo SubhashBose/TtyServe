@@ -41,6 +41,11 @@ func New(cfg config.Config) (*Authenticator, error) {
 // ErrUnauthorized indicates the request failed basic-auth.
 var ErrUnauthorized = errors.New("unauthorized")
 
+// ErrNoIdentityHeader indicates proxy_header mode got a request without the
+// configured identity header. Fail closed: a misconfigured proxy must not
+// hand out anonymous or shared sessions.
+var ErrNoIdentityHeader = errors.New("missing identity header (proxy_header mode expects the reverse proxy to set it)")
+
 // Identity is the result of authenticating a request.
 type Identity struct {
 	// Key is the stable identity used to look up the client's sessions.
@@ -76,6 +81,16 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 	case config.PersistShortTerm:
 		return a.shortTerm(r)
 
+	case config.PersistProxyHeader:
+		// Trust the reverse proxy to have authenticated the user and put a
+		// stable identifier in the configured header. Spoofing is prevented
+		// by deployment (bind to unix:// or loopback), not by this code.
+		v := strings.TrimSpace(r.Header.Get(a.cfg.ProxyHeaderName))
+		if v == "" {
+			return Identity{}, ErrNoIdentityHeader
+		}
+		return Identity{Key: "header:" + v}, nil
+
 	default:
 		return Identity{}, fmt.Errorf("unknown persistence mode")
 	}
@@ -98,6 +113,17 @@ func (a *Authenticator) shortTerm(r *http.Request) (Identity, error) {
 }
 
 func (a *Authenticator) buildCookie(value string) *http.Cookie {
+	// The cookie must outlive idle_timeout by a wide margin: an open
+	// websocket keeps the server-side client alive indefinitely but never
+	// refreshes the browser cookie (only HTTP requests do). With
+	// MaxAge == idle_timeout, a page left open past the timeout would
+	// silently lose its cookie and get a fresh identity — and lose its
+	// tabs — on the next reload. Session lifetime is enforced server-side
+	// by the reaper regardless, so a long cookie changes nothing else.
+	life := a.cfg.IdleTimeout
+	if min := 30 * 24 * time.Hour; life < min {
+		life = min
+	}
 	return &http.Cookie{
 		Name:     a.cfg.CookieName,
 		Value:    value,
@@ -105,7 +131,7 @@ func (a *Authenticator) buildCookie(value string) *http.Cookie {
 		HttpOnly: true,
 		Secure:   a.cfg.CookieSecure,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   int(a.cfg.IdleTimeout / time.Second),
+		MaxAge:   int(life / time.Second),
 	}
 }
 
