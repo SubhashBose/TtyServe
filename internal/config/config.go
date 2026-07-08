@@ -4,12 +4,33 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// headerEnvRe matches ${header.NAME} placeholders in env values. NAME is a
+// standard HTTP header token (letters, digits, hyphen, underscore).
+var headerEnvRe = regexp.MustCompile(`\$\{header\.([A-Za-z0-9_-]+)\}`)
+
+// ExpandHeaderEnv replaces ${header.NAME} placeholders in each env entry with
+// get(NAME) — typically a request-header lookup. A missing/empty header
+// expands to the empty string. Entries with no placeholder are unchanged.
+func ExpandHeaderEnv(env []string, get func(string) string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]string, len(env))
+	for i, e := range env {
+		out[i] = headerEnvRe.ReplaceAllStringFunc(e, func(m string) string {
+			return get(headerEnvRe.FindStringSubmatch(m)[1])
+		})
+	}
+	return out
+}
 
 // PersistenceMode selects how sessions are tied to a client.
 type PersistenceMode string
@@ -39,7 +60,7 @@ type Config struct {
 	// Listen is what to bind: an IP address ("127.0.0.1", "::1"), an
 	// interface name ("eth0"), or a unix socket ("unix:///run/tty.sock").
 	// Empty = all interfaces. TLS applies to any listener whenever
-	// tls_cert_file/tls_key_file are configured.
+	// tls-cert-file/tls-key-file are configured.
 	Listen string `yaml:"listen"`
 
 	// Port is the TCP port to listen on (ignored for unix sockets).
@@ -52,59 +73,59 @@ type Config struct {
 	Args    []string `yaml:"-"`
 
 	// Working directory for spawned terminals. Empty = server's cwd.
-	WorkingDir string `yaml:"working_dir"`
+	WorkingDir string `yaml:"working-dir"`
 
 	// Extra environment variables (KEY=VALUE) applied to each terminal.
 	Env []string `yaml:"env"`
 
 	// SessionPersistence turns persistence on/off entirely. When false, a
 	// session is bound to one websocket and dies on disconnect.
-	SessionPersistence bool `yaml:"session_persistence"`
+	SessionPersistence bool `yaml:"session-persistence"`
 
 	// PersistenceMode is "user" or "short_term". Only meaningful when
 	// SessionPersistence is true.
-	PersistenceMode PersistenceMode `yaml:"persistence_mode"`
+	PersistenceMode PersistenceMode `yaml:"persistence-mode"`
 
 	// MultiSession enables multiple terminal sessions (tabs) per client.
 	// When false, each client gets exactly one session and no tab bar.
-	MultiSession bool `yaml:"multi_session"`
+	MultiSession bool `yaml:"multi-session"`
 
 	// MaxSessionsPerClient caps tabs per client. 0 = unlimited.
-	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	MaxSessionsPerClient int `yaml:"max-sessions-per-client"`
 
 	// TabBarPosition is "top" or "right".
-	TabBarPosition string `yaml:"tab_bar_position"`
+	TabBarPosition string `yaml:"tab-bar-position"`
 
 	// --- Auth (PersistByUser) ---
 	Users []User `yaml:"users"`
 
 	// AuthRealm is the basic-auth realm shown to browsers.
-	AuthRealm string `yaml:"auth_realm"`
+	AuthRealm string `yaml:"auth-realm"`
 
 	// --- Proxy header identity (PersistProxyHeader) ---
 	// ProxyHeaderName is the request header whose value identifies the user.
-	ProxyHeaderName string `yaml:"proxy_header_name"`
+	ProxyHeaderName string `yaml:"proxy-header-name"`
 
 	// --- Short term sessions ---
 	// IdleTimeout is how long a short-term session survives with no active
 	// websocket before being reaped. Also used as the cookie max-age.
-	IdleTimeout time.Duration `yaml:"idle_timeout"`
+	IdleTimeout time.Duration `yaml:"idle-timeout"`
 
 	// CookieName for short-term session identification.
-	CookieName string `yaml:"cookie_name"`
+	CookieName string `yaml:"cookie-name"`
 
 	// CookieSecure marks the session cookie Secure (HTTPS only). Set true in
 	// production behind TLS.
-	CookieSecure bool `yaml:"cookie_secure"`
+	CookieSecure bool `yaml:"cookie-secure"`
 
 	// AllowOrigins lists extra Origin values permitted to open websockets,
 	// beyond same-host which is always allowed. Use ["*"] to allow all
 	// (matches previous behavior; not recommended with cookie auth).
-	AllowOrigins []string `yaml:"allow_origins"`
+	AllowOrigins []string `yaml:"allow-origins"`
 
 	// --- TLS ---
-	TLSCertFile string `yaml:"tls_cert_file"`
-	TLSKeyFile  string `yaml:"tls_key_file"`
+	TLSCertFile string `yaml:"tls-cert-file"`
+	TLSKeyFile  string `yaml:"tls-key-file"`
 
 	// --- Behaviour, ttyd-inspired ---
 	// Readonly disables client keyboard input: terminals become
@@ -114,46 +135,77 @@ type Config struct {
 	// URLArg appends the page URL's query parameters to the command's
 	// arguments: /?arg1&arg2=5 runs "command arg1 arg2=5". SECURITY: this
 	// lets any client who can reach the server influence the command line.
-	URLArg bool `yaml:"url_arg"`
+	URLArg bool `yaml:"url-arg"`
 
 	// URLEnv turns the page URL's query parameters into extra environment
 	// variables: /?arg1&arg2=5 runs the command with arg1= and arg2=5 set.
 	// Mutually exclusive with URLArg. Same security caveat.
-	URLEnv bool `yaml:"url_env"`
+	URLEnv bool `yaml:"url-env"`
 
 	// MaxClientsPerSession limits concurrent websockets attached to one
 	// session (allows shared viewing). 0 = unlimited.
-	MaxClientsPerSession int `yaml:"max_clients_per_session"`
+	MaxClientsPerSession int `yaml:"max-clients-per-session"`
 
 	// PingInterval is the websocket keepalive ping period.
-	PingInterval time.Duration `yaml:"ping_interval"`
+	PingInterval time.Duration `yaml:"ping-interval"`
 
 	// ScrollbackLines is how many lines of output are buffered server-side so
 	// a reconnecting client can repaint the screen. 0 disables replay.
-	ScrollbackBytes int `yaml:"scrollback_bytes"`
+	ScrollbackBytes int `yaml:"scrollback-bytes"`
 
 	// FontSize is the terminal font size in CSS pixels.
-	FontSize int `yaml:"font_size"`
+	FontSize int `yaml:"font-size"`
 
 	// DisableHyperlink turns off clickable links in the terminal (both
 	// auto-detected URLs and OSC 8 explicit hyperlinks).
-	DisableHyperlink bool `yaml:"disable_hyperlink"`
+	DisableHyperlink bool `yaml:"disable-hyperlink"`
 
 	// MiddleclickPaste pastes the clipboard on middle click (like a Linux
 	// terminal). Set false to disable.
-	MiddleclickPaste bool `yaml:"middleclick_paste"`
+	MiddleclickPaste bool `yaml:"middleclick-paste"`
+
+	// DOMRenderer uses xterm's DOM text renderer instead of the canvas one.
+	// Slower scrolling, but immune to mobile GPU canvas blanking (Android
+	// Chromium can black out the text canvas when sixel images allocate
+	// GPU memory). Graphics still work: images draw on their own layer.
+	DOMRenderer bool `yaml:"dom-renderer"`
 
 	// EnableGraphics loads the xterm.js image addon, enabling inline
 	// graphics via sixel and the iTerm2 inline image protocol. When false
 	// the decoder isn't loaded and sixel support is not advertised to
 	// applications.
-	EnableGraphics bool `yaml:"enable_graphics"`
+	EnableGraphics bool `yaml:"enable-graphics"`
 
 	// Title is the browser/page title.
 	Title string `yaml:"title"`
 
+	// --- Tab titles ---
+	// Auto tab titles are "<process> <dir>" by default: the foreground
+	// process name and the shell's cwd basename. Precedence of the options
+	// below: TabTitle > TabShowPS1 > TabShowPsname/TabShowCwd.
+
+	// TabShowPsname includes the foreground process name in auto titles.
+	TabShowPsname bool `yaml:"tab-show-psname"`
+
+	// TabShowCwd includes the working directory basename in auto titles.
+	TabShowCwd bool `yaml:"tab-show-cwd"`
+
+	// TabShowPS1 titles tabs with what the shell announces via OSC 0/2
+	// window-title sequences (most PS1 setups emit "user@host:dir").
+	// Overrides TabShowPsname/TabShowCwd.
+	TabShowPS1 bool `yaml:"tab-show-ps1"`
+
+	// TabTitle fixes every tab's title, overriding all auto-titling.
+	TabTitle string `yaml:"tab-title"`
+
 	// CloseOnExit: when the shell process exits, remove the session.
-	CloseOnExit bool `yaml:"close_on_exit"`
+	CloseOnExit bool `yaml:"close-on-exit"`
+
+	// AutoRespawn: when the last session ends, immediately start a new one.
+	// When false (default), multi-session mode just leaves the tab bar
+	// empty, and single-session mode offers restart on Enter. The first
+	// page load always starts a terminal regardless.
+	AutoRespawn bool `yaml:"auto-respawn"`
 }
 
 // Default returns a Config populated with reasonable defaults.
@@ -177,11 +229,17 @@ func Default() Config {
 		PingInterval:         20 * time.Second,
 		ScrollbackBytes:      256 * 1024,
 		FontSize:             14,
+		DOMRenderer:          false,
 		EnableGraphics:       true,
 		DisableHyperlink:     false,
 		MiddleclickPaste:     true,
 		Title:                "TtyServe",
 		CloseOnExit:          true,
+		AutoRespawn:          false,
+		TabShowPsname:        true,
+		TabShowCwd:           true,
+		TabShowPS1:           false,
+		TabTitle:              "",
 	}
 }
 
@@ -226,17 +284,17 @@ func (c *Config) Validate() error {
 	case "":
 		c.TabBarPosition = "top"
 	default:
-		return fmt.Errorf("tab_bar_position must be 'top' or 'right', got %q", c.TabBarPosition)
+		return fmt.Errorf("tab-bar-position must be 'top' or 'right', got %q", c.TabBarPosition)
 	}
 	if c.SessionPersistence {
 		switch c.PersistenceMode {
 		case PersistByUser:
 			if len(c.Users) == 0 {
-				return fmt.Errorf("persistence_mode 'user' requires at least one user")
+				return fmt.Errorf("persistence-mode 'user' requires at least one user")
 			}
 		case PersistShortTerm:
 			if c.IdleTimeout <= 0 {
-				return fmt.Errorf("idle_timeout must be > 0 for short_term mode")
+				return fmt.Errorf("idle-timeout must be > 0 for short_term mode")
 			}
 		case PersistProxyHeader:
 			if c.ProxyHeaderName == "" {
@@ -245,7 +303,7 @@ func (c *Config) Validate() error {
 		case "":
 			c.PersistenceMode = PersistShortTerm
 		default:
-			return fmt.Errorf("persistence_mode must be 'user', 'short_term' or 'proxy_header', got %q", c.PersistenceMode)
+			return fmt.Errorf("persistence-mode must be 'user', 'short_term' or 'proxy_header', got %q", c.PersistenceMode)
 		}
 	}
 	if c.CookieName == "" {
@@ -264,10 +322,20 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("port must be 1-65535, got %d", c.Port)
 	}
 	if c.URLArg && c.URLEnv {
-		return fmt.Errorf("url_arg and url_env are mutually exclusive")
+		return fmt.Errorf("url-arg and url-env are mutually exclusive")
+	}
+	// Tab title precedence: a fixed name beats PS1, which beats psname/cwd.
+	if c.TabTitle != "" {
+		c.TabShowPS1 = false
+		c.TabShowPsname = false
+		c.TabShowCwd = false
+	}
+	if c.TabShowPS1 {
+		c.TabShowPsname = false
+		c.TabShowCwd = false
 	}
 	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
-		return fmt.Errorf("tls_cert_file and tls_key_file must both be set or both empty")
+		return fmt.Errorf("tls-cert-file and tls-key-file must both be set or both empty")
 	}
 	return nil
 }
@@ -345,7 +413,7 @@ func (c *Config) ListenSpecs() ([]ListenSpec, error) {
 		return []ListenSpec{{Network: "unix", Address: path, TLS: tls}}, nil
 	}
 	if strings.HasPrefix(c.Listen, "unixs://") {
-		return nil, fmt.Errorf("listen: unixs:// is not a thing; use unix:// — TLS is enabled by tls_cert_file/tls_key_file")
+		return nil, fmt.Errorf("listen: unixs:// is not a thing; use unix:// — TLS is enabled by tls-cert-file/tls-key-file")
 	}
 
 	port := strconv.Itoa(c.Port)

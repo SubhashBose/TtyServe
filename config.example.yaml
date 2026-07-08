@@ -14,50 +14,53 @@ port: 7681                   # TCP port, ignored for unix sockets (default: 7681
 #   e.g. command: "/usr/bin/tmux new -A -s main"
 #        command: "/bin/sh -c 'echo hi && exec bash'"
 command: "/bin/bash"
-working_dir: "" # (default: "" = server's cwd)
+working-dir: "" # (default: "" = server's cwd)
 env: []                      # e.g. ["FOO=bar"] (default: none)
+                             # ${header.NAME} expands to a request header value
+                             # at spawn time, e.g. ["USER=${header.X-Forwarded-User}"]
+                             # (trusts the header — see proxy_header security notes)
 
 # --- Multi-session / tabs ---
-multi_session: true          # (default: true)
-max_sessions_per_client: 0   # 0 = unlimited (default: 0)
-tab_bar_position: "top"      # "top" or "right" (default: top)
+multi-session: true          # (default: true)
+max-sessions-per-client: 0   # 0 = unlimited (default: 0)
+tab-bar-position: "top"      # "top" or "right" (default: top)
 
 # --- Persistence ---
 # When false, a session is bound to a single websocket and dies on disconnect.
-session_persistence: true    # (default: true)
+session-persistence: true    # (default: true)
 
 # "user"         -> sessions tied to an HTTP basic-auth user, live until killed.
-# "short_term"   -> sessions tied to a browser cookie, reaped after idle_timeout.
-# "proxy_header" -> sessions tied to the value of proxy_header_name, which a
+# "short_term"   -> sessions tied to a browser cookie, reaped after idle-timeout.
+# "proxy_header" -> sessions tied to the value of proxy-header-name, which a
 #                   reverse proxy sets after authenticating the user. ONLY
 #                   safe when clients cannot reach ttyserve directly: bind to
 #                   a unix:// socket or 127.0.0.1, and make sure the proxy
 #                   strips/overwrites the header from client requests.
-persistence_mode: "short_term"  # (default: short_term)
+persistence-mode: "short_term"  # (default: short_term)
 
-# --- Proxy header identity (persistence_mode: proxy_header) ---
-proxy_header_name: "X-Forwarded-User"  # (default: X-Forwarded-User)
+# --- Proxy header identity (persistence-mode: proxy_header) ---
+proxy-header-name: "X-Forwarded-User"  # (default: X-Forwarded-User)
 
-# --- User auth (persistence_mode: user) ---
+# --- User auth (persistence-mode: user) ---
 users:                       # (default: none; required for 'user' mode)
   - name: "admin"
     password: "changeme"
   # - name: "alice"
   #   password: "s3cret"
-auth_realm: "ttyserve"       # (default: ttyserve)
+auth-realm: "ttyserve"       # (default: ttyserve)
 
-# --- Short-term sessions (persistence_mode: short_term) ---
-idle_timeout: 5m             # reap sessions with no connection this long (default: 5m)
-cookie_name: "ttyserve_session"  # (default: ttyserve_session)
-cookie_secure: false         # set true when serving over HTTPS (default: false)
+# --- Short-term sessions (persistence-mode: short_term) ---
+idle-timeout: 5m             # reap sessions with no connection this long (default: 5m)
+cookie-name: "ttyserve_session"  # (default: ttyserve_session)
+cookie-secure: false         # set true when serving over HTTPS (default: false)
 
 # Extra Origins allowed to open websockets (same-host is always allowed).
 # Needed if you serve the UI behind a proxy on a different host. ["*"] = any.
-allow_origins: []            # (default: none)
+allow-origins: []            # (default: none)
 
 # --- TLS (optional) ---
-tls_cert_file: ""            # (default: "" = plain HTTP)
-tls_key_file: ""
+tls-cert-file: ""            # (default: "" = plain HTTP)
+tls-key-file: ""
 
 # --- Behaviour ---
 readonly: false              # true = read-only terminals, no client input (default: false)
@@ -65,18 +68,33 @@ readonly: false              # true = read-only terminals, no client input (defa
 # URL query parameters as spawn parameters (default: both false; mutually
 # exclusive). SECURITY: either one lets any client who can open the page
 # influence the spawned command — only enable behind trusted access control.
-#   url_arg: true -> /?arg1&arg2=5 runs "command arg1 arg2=5"
-#   url_env: true -> /?arg1&arg2=5 runs command with env arg1= and arg2=5
-url_arg: false
-url_env: false
-max_clients_per_session: 0   # 0 = unlimited shared viewers (default: 0)
-ping_interval: 20s           # websocket keepalive (default: 20s)
-scrollback_bytes: 262144     # server-side replay buffer per session (default: 262144)
-font_size: 14                # terminal font size in px (default: 14)
-enable_graphics: true        # inline images via sixel/iTerm2 protocol (default: true);
+#   url-arg: true -> /?arg1&arg2=5 runs "command arg1 arg2=5"
+#   url-env: true -> /?arg1&arg2=5 runs command with env arg1= and arg2=5
+url-arg: false
+url-env: false
+max-clients-per-session: 0   # 0 = unlimited shared viewers (default: 0)
+ping-interval: 20s           # websocket keepalive (default: 20s)
+scrollback-bytes: 262144     # server-side replay buffer per session (default: 262144)
+font-size: 14                # terminal font size in px (default: 14)
+dom-renderer: false          # use DOM text rendering instead of canvas (default:
+                             # false); enable if browser canvas rendering is an issue— 
+                             #graphics still work
+enable-graphics: true        # inline images via sixel/iTerm2 protocol (default: true);
                              # turn off for shared read-only viewing or low-memory clients
-disable_hyperlink: false     # true = links in output are not clickable (default: false)
-middleclick_paste: true      # paste clipboard on middle click (default: true)
+disable-hyperlink: false     # true = links in output are not clickable (default: false)
+middleclick-paste: true      # paste clipboard on middle click (default: true)
 title: "TtyServe"            # browser page title (default: TtyServe)
-close_on_exit: true          # remove session when its command exits (default: true);
+close-on-exit: true          # remove session when its command exits (default: true);
                              # false keeps the tab, offering restart on Enter
+auto-respawn: false          # start a new session immediately when the last one
+                             # ends (default: false = empty tab bar, or restart
+                             # on Enter in single-session mode)
+
+# --- Tab titles ---
+# Auto titles are "<process> <dir>", e.g. "vim myproject".
+# Precedence: tab-title > tab-show-ps1 > tab-show-psname/tab-show-cwd.
+tab-show-psname: true        # include foreground process name (default: true)
+tab-show-cwd: true           # include working dir basename (default: true)
+tab-show-ps1: false          # title tabs from the shell's OSC 0/2 window title,
+                             # e.g. "user@host:~/dir" (default: false)
+tab-title: ""                # fixed title for every tab (default: "" = auto)

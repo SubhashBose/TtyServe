@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,9 @@ type Session struct {
 	// userTitled is set once the user chooses a title (explicit title on
 	// create, or a rename). It pins the title: auto cwd-tracking stops.
 	userTitled bool
+	// autoPs/autoDir are the components of an auto title ("<process> <dir>"),
+	// kept separately so the frontend can style them differently.
+	autoPs, autoDir string
 
 	// extraArgs/extraEnv are per-session spawn parameters from the URL
 	// (url_arg / url_env modes), kept so a restart respawns identically.
@@ -58,17 +62,27 @@ func (s *Session) Rename(title string) {
 	s.mu.Lock()
 	s.Title = title
 	s.userTitled = true
+	s.autoPs, s.autoDir = "", ""
 	s.mu.Unlock()
 }
 
-// AutoTitle updates the title to follow the shell's cwd, unless the user has
-// set a title themselves.
-func (s *Session) AutoTitle(title string) {
+// AutoTitle updates the title from its live components (foreground process
+// name and cwd basename; either may be empty), unless the user has set a
+// title themselves.
+func (s *Session) AutoTitle(ps, dir string) {
 	s.mu.Lock()
-	if !s.userTitled && title != "" {
-		s.Title = title
+	if !s.userTitled && (ps != "" || dir != "") {
+		s.autoPs, s.autoDir = ps, dir
+		s.Title = strings.TrimSpace(ps + " " + dir)
 	}
 	s.mu.Unlock()
+}
+
+// Info returns the serializable view of the session.
+func (s *Session) Info() SessionInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return SessionInfo{ID: s.ID, Title: s.Title, Ps: s.autoPs, Dir: s.autoDir}
 }
 
 // GetTitle returns the tab title safely.
@@ -108,6 +122,11 @@ func newClient(id string) *Client {
 type SessionInfo struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
+	// Ps/Dir are the auto-title components (foreground process name, cwd
+	// basename) so the frontend can style them differently. Empty for
+	// user-titled tabs.
+	Ps  string `json:"ps,omitempty"`
+	Dir string `json:"dir,omitempty"`
 }
 
 // List returns session metadata in creation order.
@@ -117,7 +136,7 @@ func (c *Client) List() []SessionInfo {
 	out := make([]SessionInfo, 0, len(c.order))
 	for _, id := range c.order {
 		if s, ok := c.sess[id]; ok {
-			out = append(out, SessionInfo{ID: s.ID, Title: s.GetTitle()})
+			out = append(out, s.Info())
 		}
 	}
 	return out

@@ -48,6 +48,8 @@
     background: #4ec9b0; flex: none; }
   .tab.disconnected::before { background: #f48771; }
   .tab .title { outline: none; }
+  .tab .title .dir { color: #8c8c8c; }
+  .tab.active .title .dir { color: #9f9f9f; }
   .tab .title[contenteditable="true"] { user-select: text; cursor: text; }
   .tab .close { opacity: .6; font-weight: bold; padding: 0 2px; }
   .tab .close:hover { opacity: 1; color: #f48771; }
@@ -56,8 +58,13 @@
   #newtab:hover { border-color: var(--accent); }
 
   #terminals { position: relative; flex: 1; min-height: 0; min-width: 0; }
-  .term-pane { position: absolute; inset: 0; display: none; }
+  .term-pane { position: absolute; inset: 0; display: none; background: var(--bg); }
   .term-pane.active { display: block; }
+  /* Physically inset the terminal from the pane edges for breathing room,
+     with a bit more at the bottom so the last line clears the rounded
+     corners of an embedding frame. The fit addon measures this element, so
+     the grid fits exactly inside — no reliance on CSS-padding subtraction. */
+  .term-inner { position: absolute; top: 5px; left: 5px; right: 5px; bottom: 8px; }
 
   #status { position: absolute; bottom: 8px; right: 12px; font-size: 12px;
     background: rgba(0,0,0,.6); padding: 3px 8px; border-radius: 4px;
@@ -85,12 +92,16 @@
     graphics: {{.EnableGraphics}},
     hyperlinks: {{not .DisableHyperlink}},
     middleclickPaste: {{.MiddleclickPaste}},
+    tabShowPS1: {{.TabShowPS1}},
+    autoRespawn: {{.AutoRespawn}},
+    domRenderer: {{.DOMRenderer}},
     sessions: {{.Sessions}}
   };
 </script>
 <script src="static/xterm.js?v={{.V}}"></script>
 <script src="static/xterm-addon-fit.js?v={{.V}}"></script>
-<script src="static/xterm-addon-canvas.js?v={{.V}}"></script>
+{{if not .DOMRenderer}}<script src="static/xterm-addon-canvas.js?v={{.V}}"></script>
+{{end}}
 {{if not .DisableHyperlink}}<script src="static/xterm-addon-web-links.js?v={{.V}}"></script>
 {{end}}
 {{if .EnableGraphics}}<script src="static/xterm-addon-image.js?v={{.V}}"></script>

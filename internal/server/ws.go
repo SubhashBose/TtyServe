@@ -20,6 +20,9 @@ const (
 const (
 	srvOutput = 'o' // payload: raw terminal output
 	srvExit   = 'e' // session's stream ended (shell exit / session closed)
+	srvReplay = 'r' // payload: scrollback repaint — client must NOT reply to
+	// capability queries in it (they were already answered live; replying
+	// again injects the responses as phantom input at the shell prompt)
 )
 
 type resizePayload struct {
@@ -61,12 +64,33 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		return conn.WriteMessage(messageType, data)
 	}
+	// sendFrame writes opcode + payload without copying the payload into a
+	// prefixed buffer — output chunks can be large (up to the 1 MiB
+	// coalescing cap), so the copy is worth avoiding.
+	sendFrame := func(op byte, payload []byte) error {
+		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+		w, err := conn.NextWriter(websocket.BinaryMessage)
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write([]byte{op}); err != nil {
+			_ = w.Close()
+			return err
+		}
+		if len(payload) > 0 {
+			if _, err := w.Write(payload); err != nil {
+				_ = w.Close()
+				return err
+			}
+		}
+		return w.Close()
+	}
 
 	// Replay scrollback so a reconnecting client repaints its screen. This
 	// happens before the writer goroutine starts, so there is only ever one
 	// concurrent writer on the connection.
 	if len(snapshot) > 0 {
-		if err := send(websocket.BinaryMessage, append([]byte{srvOutput}, snapshot...)); err != nil {
+		if err := sendFrame(srvReplay, snapshot); err != nil {
 			conn.Close()
 			return
 		}
@@ -87,12 +111,12 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 			case <-sub.Notify():
 				chunk, open := sub.Take()
 				if len(chunk) > 0 {
-					if err := send(websocket.BinaryMessage, append([]byte{srvOutput}, chunk...)); err != nil {
+					if err := sendFrame(srvOutput, chunk); err != nil {
 						return
 					}
 				}
 				if !open {
-					_ = send(websocket.BinaryMessage, []byte{srvExit})
+					_ = sendFrame(srvExit, nil)
 					return
 				}
 			case <-ping.C:

@@ -5,6 +5,28 @@ import (
 	"testing"
 )
 
+func TestExpandHeaderEnv(t *testing.T) {
+	headers := map[string]string{"X-Forwarded-User": "alice", "X-Api-Key": "k3y"}
+	get := func(name string) string { return headers[name] }
+
+	in := []string{
+		"USER=${header.X-Forwarded-User}",
+		"KEY=${header.X-Api-Key}",
+		"PLAIN=bar",
+		"MISSING=${header.X-Absent}",
+		"TWO=${header.X-Forwarded-User}/${header.X-Api-Key}",
+	}
+	want := []string{"USER=alice", "KEY=k3y", "PLAIN=bar", "MISSING=", "TWO=alice/k3y"}
+	got := ExpandHeaderEnv(in, get)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ExpandHeaderEnv = %#v, want %#v", got, want)
+	}
+
+	if ExpandHeaderEnv(nil, get) != nil {
+		t.Error("empty env should return nil")
+	}
+}
+
 func TestSplitCommand(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -72,5 +94,26 @@ func TestValidateOptionInteractions(t *testing.T) {
 	}
 	if !cfg.Readonly {
 		t.Error("Validate must not reset Readonly")
+	}
+}
+
+func TestValidateTabTitlePrecedence(t *testing.T) {
+	cfg := Default()
+	cfg.TabShowPS1 = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if cfg.TabShowPsname || cfg.TabShowCwd {
+		t.Error("tab-show-ps1 must disable psname/cwd titling")
+	}
+
+	cfg = Default()
+	cfg.TabTitle = "fixed"
+	cfg.TabShowPS1 = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if cfg.TabShowPS1 || cfg.TabShowPsname || cfg.TabShowCwd {
+		t.Error("tab-title must disable all auto-titling")
 	}
 }

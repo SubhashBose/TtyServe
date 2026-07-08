@@ -263,6 +263,16 @@ func (s *Server) urlSpawnParams(r *http.Request) (args, env []string) {
 	return args, env
 }
 
+// spawnParams builds the args and full environment for a new session from
+// this request: the configured env with ${header.NAME} placeholders expanded
+// against request headers, followed by any URL env (url_env mode).
+func (s *Server) spawnParams(r *http.Request) (args, env []string) {
+	args, urlEnv := s.urlSpawnParams(r)
+	env = config.ExpandHeaderEnv(s.cfg.Env, r.Header.Get)
+	env = append(env, urlEnv...)
+	return args, env
+}
+
 type pageData struct {
 	Title              string
 	MultiSession       bool
@@ -274,6 +284,9 @@ type pageData struct {
 	EnableGraphics     bool
 	DisableHyperlink   bool
 	MiddleclickPaste   bool
+	TabShowPS1         bool
+	AutoRespawn        bool
+	DOMRenderer        bool
 	// Sessions is inlined into the page so the frontend can build tabs and
 	// open websockets immediately, without a follow-up API round trip.
 	Sessions []session.SessionInfo
@@ -291,7 +304,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Guarantee at least one session exists on first load.
-	args, env := s.urlSpawnParams(r)
+	args, env := s.spawnParams(r)
 	if _, err := s.mgr.EnsureDefaultSession(cl, args, env); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -313,6 +326,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		EnableGraphics:     s.cfg.EnableGraphics,
 		DisableHyperlink:   s.cfg.DisableHyperlink,
 		MiddleclickPaste:   s.cfg.MiddleclickPaste,
+		TabShowPS1:         s.cfg.TabShowPS1,
+		AutoRespawn:        s.cfg.AutoRespawn,
+		DOMRenderer:        s.cfg.DOMRenderer,
 		Sessions:           cl.List(),
 		V:                  s.assetVer,
 	})
@@ -336,7 +352,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			Title string `json:"title"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		args, env := s.urlSpawnParams(r)
+		args, env := s.spawnParams(r)
 		sess, err := s.mgr.CreateSession(cl, capTitle(strings.TrimSpace(body.Title)), args, env)
 		if err == session.ErrTooManySessions {
 			http.Error(w, "maximum allowed session limit reached", http.StatusForbidden)
@@ -346,7 +362,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusCreated, session.SessionInfo{ID: sess.ID, Title: sess.GetTitle()})
+		writeJSON(w, http.StatusCreated, sess.Info())
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -395,7 +411,7 @@ func (s *Server) handleSessionItem(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			writeJSON(w, http.StatusOK, session.SessionInfo{ID: sess.ID, Title: sess.GetTitle()})
+			writeJSON(w, http.StatusOK, sess.Info())
 			return
 		}
 		http.NotFound(w, r)
@@ -411,7 +427,7 @@ func (s *Server) handleSessionItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		sess.Rename(capTitle(strings.TrimSpace(body.Title)))
-		writeJSON(w, http.StatusOK, session.SessionInfo{ID: sess.ID, Title: sess.GetTitle()})
+		writeJSON(w, http.StatusOK, sess.Info())
 	case http.MethodDelete:
 		_ = s.mgr.CloseSession(cl, id)
 		w.WriteHeader(http.StatusNoContent)
@@ -435,10 +451,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// No session specified: use/create the default. No URL spawn params
-		// here — the /ws query carries protocol fields, not user parameters.
+		// No session specified: use/create the default. The /ws query carries
+		// protocol fields, not URL spawn params, so only the configured env
+		// (with header placeholders expanded) applies here.
 		var err error
-		sess, err = s.mgr.EnsureDefaultSession(cl, nil, nil)
+		env := config.ExpandHeaderEnv(s.cfg.Env, r.Header.Get)
+		sess, err = s.mgr.EnsureDefaultSession(cl, nil, env)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

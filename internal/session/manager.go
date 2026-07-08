@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +20,12 @@ var (
 // Manager owns all clients and their sessions.
 type Manager struct {
 	cfg      config.Config
-	defTitle string // default tab title: basename of the terminals' working dir
+	defTitle string // initial tab title for new sessions
+	// defPs/defDir are its auto-title components — the configured command's
+	// basename and the starting directory's basename — so a new tab shows
+	// the expected "<process> <dir>" immediately instead of waiting for the
+	// first updater tick.
+	defPs, defDir string
 
 	mu      sync.Mutex
 	clients map[string]*Client
@@ -30,17 +36,48 @@ type Manager struct {
 
 // NewManager creates a manager and starts the reaper if needed.
 func NewManager(cfg config.Config) *Manager {
+	var defPs, defDir string
+	if cfg.TabShowPsname {
+		defPs = filepath.Base(cfg.Command)
+	}
+	if cfg.TabShowCwd {
+		defDir = defaultTitle(cfg.WorkingDir)
+	}
+	defTitle := strings.TrimSpace(defPs + " " + defDir)
+	switch {
+	case cfg.TabTitle != "":
+		defTitle = cfg.TabTitle
+		defPs, defDir = "", ""
+	case defTitle == "":
+		defTitle = "terminal"
+	}
 	m := &Manager{
 		cfg:      cfg,
-		defTitle: defaultTitle(cfg.WorkingDir),
+		defTitle: defTitle,
+		defPs:    defPs,
+		defDir:   defDir,
 		clients:  make(map[string]*Client),
 		stop:     make(chan struct{}),
 	}
 	if cfg.SessionPersistence && cfg.PersistenceMode == config.PersistShortTerm {
 		go m.reaper()
 	}
-	go m.titleUpdater()
+	// Auto titles only matter when tabs are visible, sessions outlive a
+	// page load, and neither a fixed tab-title nor PS1 titling (which is
+	// client-side) is configured; otherwise skip the updater (and, via
+	// TrackCwd, the per-chunk OSC 7 scanning) entirely.
+	if m.autoTitleEnabled() {
+		go m.titleUpdater()
+	}
 	return m
+}
+
+// autoTitleEnabled reports whether the server-side psname/cwd title updater
+// should run under the current config.
+func (m *Manager) autoTitleEnabled() bool {
+	return m.cfg.SessionPersistence && m.cfg.MultiSession &&
+		m.cfg.TabTitle == "" && !m.cfg.TabShowPS1 &&
+		(m.cfg.TabShowPsname || m.cfg.TabShowCwd)
 }
 
 // Client returns (creating if needed) the client for an identity.
@@ -73,12 +110,9 @@ func (m *Manager) CreateSession(c *Client, title string, extraArgs, extraEnv []s
 	if err != nil {
 		return nil, err
 	}
-	// An explicit title pins the tab; empty means auto (default now, then
-	// tracking the shell's cwd).
-	userTitled := title != ""
-	if title == "" {
-		title = m.defTitle
-	}
+	// An explicit title (from the API, or a configured fixed tab-title) pins
+	// the tab; empty means auto (default now, then live psname/cwd).
+	userTitled := title != "" || m.cfg.TabTitle != ""
 	s := &Session{
 		ID:         newSessionID(),
 		Title:      title,
@@ -87,6 +121,11 @@ func (m *Manager) CreateSession(c *Client, title string, extraArgs, extraEnv []s
 		userTitled: userTitled,
 		extraArgs:  extraArgs,
 		extraEnv:   extraEnv,
+	}
+	if title == "" {
+		// Auto-titled: start with the expected components right away.
+		s.Title = m.defTitle
+		s.autoPs, s.autoDir = m.defPs, m.defDir
 	}
 	c.add(s)
 
@@ -100,15 +139,19 @@ func (m *Manager) CreateSession(c *Client, title string, extraArgs, extraEnv []s
 	return s, nil
 }
 
-func (m *Manager) spawnTerminal(extraArgs, extraEnv []string) (*terminal.Terminal, error) {
+// spawnTerminal starts a terminal. extraArgs are appended to the configured
+// args; env is the fully-resolved environment for the session (the server
+// builds it from the configured env with ${header.*} placeholders expanded,
+// plus any URL env), stored per-session so restarts reproduce it exactly.
+func (m *Manager) spawnTerminal(extraArgs, env []string) (*terminal.Terminal, error) {
 	args := append(append([]string{}, m.cfg.Args...), extraArgs...)
-	env := append(append([]string{}, m.cfg.Env...), extraEnv...)
 	return terminal.New(terminal.Options{
 		Command:         m.cfg.Command,
 		Args:            args,
-		Env:             env,
+		Env:             append([]string(nil), env...),
 		WorkingDir:      m.cfg.WorkingDir,
 		ScrollbackBytes: m.cfg.ScrollbackBytes,
+		TrackCwd:        m.autoTitleEnabled() && m.cfg.TabShowCwd,
 	})
 }
 
@@ -155,8 +198,9 @@ func (m *Manager) EnsureDefaultSession(c *Client, extraArgs, extraEnv []string) 
 	return m.CreateSession(c, "", extraArgs, extraEnv)
 }
 
-// titleUpdater keeps auto-titled sessions named after their shell's current
-// working directory. Sessions the user has titled are never touched.
+// titleUpdater keeps auto-titled sessions named "<process> <dir>" — the
+// foreground process and the shell's current directory, per the tab-show-*
+// options. Sessions the user has titled are never touched.
 func (m *Manager) titleUpdater() {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
@@ -172,10 +216,31 @@ func (m *Manager) titleUpdater() {
 			}
 			m.mu.Unlock()
 			for _, c := range clients {
+				// Titles only matter to attached viewers; skip the /proc
+				// reads for clients nobody is watching.
+				if _, active := c.idleSince(); active == 0 {
+					continue
+				}
 				for _, s := range c.Sessions() {
-					if cwd := s.Term().Cwd(); cwd != "" {
-						s.AutoTitle(filepath.Base(cwd))
+					term := s.Term()
+					// Directory and foreground changes always come with
+					// output (command echo, prompt redraw), so terminals
+					// with none since the last tick can't have changed.
+					// The check is cwd-based when enabled; with cwd off
+					// there's no activity source, so always refresh.
+					if m.cfg.TabShowCwd && !term.TakeActivity() {
+						continue
 					}
+					var ps, dir string
+					if m.cfg.TabShowPsname {
+						ps = term.ForegroundName()
+					}
+					if m.cfg.TabShowCwd {
+						if cwd := term.Cwd(); cwd != "" {
+							dir = filepath.Base(cwd)
+						}
+					}
+					s.AutoTitle(ps, dir)
 				}
 			}
 		}

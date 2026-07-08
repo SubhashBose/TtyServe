@@ -21,17 +21,35 @@
     try { return localStorage.getItem(LS_ACTIVE); } catch (e) { return null; }
   }
 
-  function showStatus(msg) {
+  // showStatus displays a transient toast; pass sticky=true to keep it
+  // shown until the next status update (used for ongoing states like
+  // "reconnecting").
+  function showStatus(msg, sticky) {
     statusEl.textContent = msg;
     statusEl.classList.add("show");
     clearTimeout(showStatus._t);
-    showStatus._t = setTimeout(() => statusEl.classList.remove("show"), 1500);
+    if (!sticky) {
+      showStatus._t = setTimeout(() => statusEl.classList.remove("show"), 1500);
+    }
+  }
+
+  // Keep a sticky "reconnecting…" up while any tab is down and retrying.
+  function refreshConnStatus() {
+    if (!cfg.persistence) return; // ephemeral tabs don't reconnect
+    let down = 0;
+    for (const e of panes.values()) {
+      if (!e.connected && !e.exited && !e.awaitRestart) down++;
+    }
+    if (down > 0) {
+      showStatus(down > 1 ? "reconnecting… (" + down + " tabs)" : "reconnecting…", true);
+    }
   }
 
   // ---- protocol opcodes (must match server ws.go) ----
   const C_INPUT = "0", C_RESIZE = "1", C_PING = "2";
   const S_OUTPUT = 0x6f; // 'o'
   const S_EXIT = 0x65;   // 'e' — session stream ended
+  const S_REPLAY = 0x72; // 'r' — scrollback repaint (suppress query replies)
 
   async function api(method, path, body) {
     const opts = { method, headers: {} };
@@ -94,6 +112,7 @@
   // resize tasks) corrupt its GL state and blank the terminal, while
   // canvas has no such state and initializes safely anywhere.
   function loadRenderer(entry) {
+    if (cfg.domRenderer) return; // stay on xterm's DOM renderer
     if (window.CanvasAddon) {
       try {
         const c = new CanvasAddon.CanvasAddon();
@@ -112,10 +131,15 @@
     entry.ws = ws;
 
     ws.onopen = () => {
+      // The server replays its scrollback ring on every (re)connect; start
+      // from a clean screen or the replay would duplicate what's already
+      // rendered. No-op on a fresh terminal.
+      entry.term.reset();
       entry.connected = true;
       entry._backoff = 500;
       updateTabState(entry);
       showStatus("connected");
+      refreshConnStatus(); // other tabs may still be down
       if (entry.id === activeId) {
         fitActiveSoon(); // fit (or re-fit) now that we can tell the PTY
       } else {
@@ -128,6 +152,20 @@
       if (data.length === 0) return;
       if (data[0] === S_OUTPUT) {
         entry.term.write(data.subarray(1));
+      } else if (data[0] === S_REPLAY) {
+        // Repaint from scrollback: gate the terminal's automatic query
+        // replies (DA/OSC color/DECRQM/…) while these bytes parse, or the
+        // replies get sent to the shell as phantom input. Cleared in the
+        // write callback, which fires once parsing completes. term.write is
+        // ordered, so any live output right after paints on top correctly.
+        entry.replaying = true;
+        clearTimeout(entry._replayGuard);
+        // Guard: never leave input blocked if the write callback is missed.
+        entry._replayGuard = setTimeout(() => { entry.replaying = false; }, 3000);
+        entry.term.write(data.subarray(1), () => {
+          clearTimeout(entry._replayGuard);
+          entry.replaying = false;
+        });
       } else if (data[0] === S_EXIT) {
         entry.exited = true;
       }
@@ -153,6 +191,31 @@
         alive = !entry.exited;
       }
       if (!alive) {
+        if (!entry.exited) {
+          // The session vanished without the server signalling a command
+          // exit — a server restart or idle reap made our tab stale. Treat
+          // it like a fresh page load: spawn a replacement terminal.
+          if (cfg.multiSession) {
+            removeTabUI(sessionId, true);
+          } else {
+            entry.awaitRestart = true; // Enter retries if the spawn fails
+            entry.sessionGone = true;
+            restartSession(entry);
+          }
+          return;
+        }
+        if (!cfg.multiSession && !cfg.autoRespawn) {
+          // Single-session mode: keep the dead pane and offer a restart.
+          // The session itself is gone server-side, so Enter creates a
+          // fresh one in place (see restartSession).
+          entry.exited = false;
+          entry.awaitRestart = true;
+          entry.sessionGone = true;
+          updateTabState(entry);
+          entry.term.write("\r\n\x1b[33m[session ended]\x1b[0m — press \x1b[1mEnter\x1b[0m to restart\r\n");
+          showStatus("session ended — press Enter to restart");
+          return;
+        }
         entry.term.write("\r\n\x1b[33m[session ended]\x1b[0m\r\n");
         showStatus("session ended");
         setTimeout(() => removeTabUI(sessionId), 600);
@@ -167,7 +230,7 @@
         return;
       }
       entry.exited = false;
-      showStatus("reconnecting…");
+      refreshConnStatus();
       entry._backoff = Math.min((entry._backoff || 500) * 1.6, 5000);
       entry.reconnectTimer = setTimeout(() => {
         if (panes.has(sessionId)) connect(entry, sessionId);
@@ -226,6 +289,25 @@
     if (entry) entry.term.focus(); // the textarea stole focus
   }
 
+  // Render a tab title. Auto titles come with their components (process
+  // name + cwd) so the directory can be styled dimmer; user titles are
+  // plain text. textContent of the result always equals info.title.
+  function setTabTitle(titleEl, info) {
+    if (info.ps || info.dir) {
+      titleEl.textContent = "";
+      if (info.ps) titleEl.appendChild(document.createTextNode(info.ps));
+      if (info.ps && info.dir) titleEl.appendChild(document.createTextNode(" "));
+      if (info.dir) {
+        const d = document.createElement("span");
+        d.className = "dir";
+        d.textContent = info.dir;
+        titleEl.appendChild(d);
+      }
+    } else {
+      titleEl.textContent = info.title;
+    }
+  }
+
   function updateTabState(entry) {
     if (entry.tabEl) entry.tabEl.classList.toggle("disconnected", !entry.connected);
   }
@@ -235,11 +317,21 @@
 
     const pane = document.createElement("div");
     pane.className = "term-pane";
+    // Inner container physically inset from the pane edges provides the
+    // padding: the terminal is confined to it, so the fit addon measures
+    // the already-padded area and can't spill past any edge (relying on
+    // the addon to subtract CSS padding is unreliable across browsers).
+    const inner = document.createElement("div");
+    inner.className = "term-inner";
+    pane.appendChild(inner);
     termsEl.appendChild(pane);
-    term.open(pane); // renderer upgrade happens on first activation
+    term.open(inner); // renderer upgrade happens on first activation
 
     if (!cfg.readonly) {
       term.onData((d) => {
+        // Drop the terminal's own replies to queries embedded in a
+        // scrollback repaint; only real input/live replies reach the PTY.
+        if (entry.replaying) return;
         if (entry.awaitRestart) {
           if (d === "\r") restartSession(entry);
           return;
@@ -283,7 +375,7 @@
     tabEl.dataset.sid = info.id;
     const titleEl = document.createElement("span");
     titleEl.className = "title";
-    titleEl.textContent = info.title;
+    setTabTitle(titleEl, info);
     titleEl.title = "Double-click to rename";
     tabEl.appendChild(titleEl);
 
@@ -297,6 +389,15 @@
         closeSession(info.id);
       });
       tabEl.appendChild(closeEl);
+    }
+
+    // PS1 titling: display whatever the shell announces via OSC 0/2 window
+    // title sequences (client-side only; the server's auto-titler is off in
+    // this mode and rename persistence still works via the API).
+    if (cfg.tabShowPS1) {
+      term.onTitleChange((t) => {
+        if (t && !entry.renaming) titleEl.textContent = t;
+      });
     }
 
     tabEl.addEventListener("click", () => activate(info.id));
@@ -345,7 +446,7 @@
     const entry = {
       id: info.id, term, fit, pane, tabEl, titleEl,
       ws: null, connected: false, exited: false, awaitRestart: false,
-      reconnectTimer: null, _backoff: 500,
+      sessionGone: false, replaying: false, reconnectTimer: null, _backoff: 500,
       renderer: null, rendererLoaded: false,
     };
     panes.set(info.id, entry);
@@ -430,7 +531,10 @@
   // Guard against a crash-looping command respawning sessions in a tight loop.
   let lastAutoSpawn = 0;
 
-  function removeTabUI(id) {
+  // respawnIfLast forces a fresh session when this was the last tab, used
+  // when the removal is due to stale state (server restart) rather than a
+  // genuine command exit.
+  function removeTabUI(id, respawnIfLast) {
     const entry = panes.get(id);
     if (!entry) return;
     clearTimeout(entry.reconnectTimer);
@@ -440,7 +544,18 @@
     // combined with the image addon's setRenderer hook has thrown before,
     // which would abort term.dispose() halfway.
     if (entry.renderer) { try { entry.renderer.dispose(); } catch (e) {} entry.renderer = null; }
-    try { entry.term.dispose(); } catch (e) {}
+    // Defer the terminal disposal one idle cycle: renderer teardown puts a
+    // resize task on xterm's internal idle queue, and disposing
+    // synchronously leaves that task pointing at a dead renderer (async
+    // "handleResize of undefined" console error in xterm 5.2). Letting the
+    // queue drain first avoids it; the UI is removed immediately either way.
+    const term = entry.term;
+    const disposeTerm = () => { try { term.dispose(); } catch (e) {} };
+    if (window.requestIdleCallback) {
+      requestIdleCallback(disposeTerm, { timeout: 1000 });
+    } else {
+      setTimeout(disposeTerm, 100);
+    }
     entry.pane.remove();
     entry.tabEl.remove();
     if (activeId === id) {
@@ -448,8 +563,11 @@
       if (!first.done) {
         activate(first.value);
       } else {
+        activeId = null;
+        // Respawn when stale-state removal asks for it, or always with
+        // auto-respawn on — guarded against tight crash loops either way.
         const now = Date.now();
-        if (now - lastAutoSpawn > 2000) {
+        if ((respawnIfLast || cfg.autoRespawn) && now - lastAutoSpawn > 2000) {
           lastAutoSpawn = now;
           addSession();
         } else {
@@ -459,9 +577,30 @@
     }
   }
 
-  // Respawn the command of an ended session (close_on_exit: false) and
-  // reconnect its websocket.
+  // Restart an ended session. Two cases: the session still exists server-
+  // side (close-on-exit: false) and its command is respawned in place; or
+  // it was removed (single-session, close-on-exit: true) and a fresh
+  // session replaces this pane.
   async function restartSession(entry) {
+    if (entry.sessionGone) {
+      let info;
+      try {
+        info = await api("POST", "api/sessions" + location.search);
+      } catch (e) {
+        showStatus(e.message || "cannot start session");
+        return;
+      }
+      // Replace the dead pane with a fresh tab bound to the new session.
+      clearTimeout(entry.reconnectTimer);
+      panes.delete(entry.id);
+      if (entry.renderer) { try { entry.renderer.dispose(); } catch (e) {} }
+      try { entry.term.dispose(); } catch (e) {}
+      entry.pane.remove();
+      entry.tabEl.remove();
+      createTab(info);
+      activate(info.id);
+      return;
+    }
     try {
       await api("POST", "api/sessions/" + encodeURIComponent(entry.id) + "/restart");
     } catch (e) {
@@ -502,8 +641,10 @@
     for (const info of list) {
       const entry = panes.get(info.id);
       if (entry) {
-        if (!entry.renaming && entry.titleEl.textContent !== info.title) {
-          entry.titleEl.textContent = info.title;
+        // In PS1 mode the shell's OSC titles own the display; don't let
+        // the server's static titles overwrite them.
+        if (!cfg.tabShowPS1 && !entry.renaming && entry.titleEl.textContent !== info.title) {
+          setTabTitle(entry.titleEl, info);
         }
       } else if (cfg.multiSession) {
         createTab(info);
@@ -521,12 +662,33 @@
     if (window.ResizeObserver) {
       new ResizeObserver(() => fitActive()).observe(termsEl);
     }
-    // Ephemeral mode has no stable identity across requests, so skip polling.
-    if (cfg.persistence) setInterval(syncSessions, 3000);
+    // Poll only when it has something to do: titles/adoption need tabs
+    // (multiSession) and a stable identity (persistence). The reconnect
+    // logic's alive-checks still touch the server's idle timer without it.
+    if (cfg.persistence && cfg.multiSession) setInterval(syncSessions, 3000);
     // Cell metrics change once the terminal font finishes loading.
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(() => fitActive());
     }
+    // React to connectivity changes: on restore, skip the pending backoff
+    // and redial every disconnected tab immediately; while offline, show a
+    // sticky notice (socket death detection can lag the actual outage).
+    window.addEventListener("online", () => {
+      // Always replace the sticky "network offline" notice — the sockets
+      // may have survived a short blip, in which case nothing below runs.
+      showStatus("network restored");
+      if (!cfg.persistence) return;
+      for (const [id, e] of panes) {
+        if (!e.connected && !e.exited && !e.awaitRestart) {
+          clearTimeout(e.reconnectTimer);
+          e._backoff = 500;
+          connect(e, id);
+        }
+      }
+      refreshConnStatus(); // re-asserts sticky "reconnecting…" if tabs are down
+    });
+    window.addEventListener("offline", () => showStatus("network offline", true));
+
     // Tabs activated while the page was hidden (e.g. auto-respawn after a
     // server restart) postponed their GPU renderer: load it once visible.
     document.addEventListener("visibilitychange", () => {

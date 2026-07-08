@@ -17,7 +17,12 @@ import (
 	"ttyserve/internal/config"
 	"ttyserve/internal/server"
 	"ttyserve/internal/session"
+
+	"github.com/SubhashBose/GoPkg-selfupdater"
 )
+
+var version = "0.2"
+var buildDate = ""
 
 func main() {
 	def := config.Default()
@@ -26,38 +31,60 @@ func main() {
 	// Flag defaults mirror config defaults so `-help` documents them; only
 	// flags the user actually set override the config file.
 	cfgPath := flag.String("config", "", "path to YAML config file")
+	showVersion := flag.Bool("version", false, "print version and exit")
+	doUpgrade := flag.Bool("upgrade", false, "upgrade the binary to the latest release and exit")
 	listen := flag.String("listen", def.Listen, "IP address, interface name, or unix://<path> socket to listen on (default: all interfaces)")
 	port := flag.Int("port", def.Port, "TCP port to listen on")
 	command := flag.String("command", def.Command, "shell-style command line run for each terminal")
-	workingDir := flag.String("working_dir", def.WorkingDir, "working directory for terminals (default: server's cwd)")
+	workingDir := flag.String("working-dir", def.WorkingDir, "working directory for terminals (default: server's cwd)")
 	env := flag.String("env", strings.Join(def.Env, ","), "extra environment variables, comma-separated KEY=VALUE pairs")
-	sessionPersistence := flag.Bool("session_persistence", def.SessionPersistence, "keep sessions alive across disconnects")
-	persistenceMode := flag.String("persistence_mode", string(def.PersistenceMode), "how sessions are tied to a client: 'user', 'short_term' or 'proxy_header'")
-	multiSession := flag.Bool("multi_session", def.MultiSession, "enable multiple sessions (tabs) per client")
-	maxSessions := flag.Int("max_sessions_per_client", def.MaxSessionsPerClient, "cap on tabs per client (0 = unlimited)")
-	tabBarPosition := flag.String("tab_bar_position", def.TabBarPosition, "tab bar position: 'top' or 'right'")
+	sessionPersistence := flag.Bool("session-persistence", def.SessionPersistence, "keep sessions alive across disconnects")
+	persistenceMode := flag.String("persistence-mode", string(def.PersistenceMode), "how sessions are tied to a client: 'user', 'short_term' or 'proxy_header'")
+	multiSession := flag.Bool("multi-session", def.MultiSession, "enable multiple sessions (tabs) per client")
+	maxSessions := flag.Int("max-sessions-per-client", def.MaxSessionsPerClient, "cap on tabs per client (0 = unlimited)")
+	tabBarPosition := flag.String("tab-bar-position", def.TabBarPosition, "tab bar position: 'top' or 'right'")
 	users := flag.String("users", "", "basic-auth users for 'user' mode, comma-separated name:password pairs")
-	authRealm := flag.String("auth_realm", def.AuthRealm, "HTTP basic-auth realm")
-	proxyHeaderName := flag.String("proxy_header_name", def.ProxyHeaderName, "proxy_header mode: header carrying the user identity")
-	idleTimeout := flag.Duration("idle_timeout", def.IdleTimeout, "short_term: reap sessions with no connection for this long")
-	cookieName := flag.String("cookie_name", def.CookieName, "short_term session cookie name")
-	cookieSecure := flag.Bool("cookie_secure", def.CookieSecure, "mark the session cookie Secure (HTTPS only)")
-	allowOrigins := flag.String("allow_origins", strings.Join(def.AllowOrigins, ","), "extra websocket Origins allowed, comma-separated ('*' = any)")
-	tlsCert := flag.String("tls_cert_file", def.TLSCertFile, "TLS certificate file (enables HTTPS)")
-	tlsKey := flag.String("tls_key_file", def.TLSKeyFile, "TLS key file")
+	authRealm := flag.String("auth-realm", def.AuthRealm, "HTTP basic-auth realm")
+	proxyHeaderName := flag.String("proxy-header-name", def.ProxyHeaderName, "proxy_header mode: header carrying the user identity")
+	idleTimeout := flag.Duration("idle-timeout", def.IdleTimeout, "short_term: reap sessions with no connection for this long")
+	cookieName := flag.String("cookie-name", def.CookieName, "short_term session cookie name")
+	cookieSecure := flag.Bool("cookie-secure", def.CookieSecure, "mark the session cookie Secure (HTTPS only)")
+	allowOrigins := flag.String("allow-origins", strings.Join(def.AllowOrigins, ","), "extra websocket Origins allowed, comma-separated ('*' = any)")
+	tlsCert := flag.String("tls-cert-file", def.TLSCertFile, "TLS certificate file (enables HTTPS)")
+	tlsKey := flag.String("tls-key-file", def.TLSKeyFile, "TLS key file")
 	readonly := flag.Bool("readonly", def.Readonly, "read-only terminals: no client input accepted")
-	urlArg := flag.Bool("url_arg", def.URLArg, "append URL query parameters to the command arguments (see security notes)")
-	urlEnv := flag.Bool("url_env", def.URLEnv, "turn URL query parameters into extra environment variables (see security notes)")
-	maxClients := flag.Int("max_clients_per_session", def.MaxClientsPerSession, "concurrent viewers per session (0 = unlimited)")
-	pingInterval := flag.Duration("ping_interval", def.PingInterval, "websocket keepalive ping period")
-	scrollback := flag.Int("scrollback_bytes", def.ScrollbackBytes, "server-side replay buffer per session")
-	fontSize := flag.Int("font_size", def.FontSize, "terminal font size in px")
-	enableGraphics := flag.Bool("enable_graphics", def.EnableGraphics, "inline graphics in the terminal (sixel + iTerm2 image protocol)")
-	disableHyperlink := flag.Bool("disable_hyperlink", def.DisableHyperlink, "turn off clickable links in the terminal")
-	middleclickPaste := flag.Bool("middleclick_paste", def.MiddleclickPaste, "paste clipboard on middle click")
+	urlArg := flag.Bool("url-arg", def.URLArg, "append URL query parameters to the command arguments (see security notes)")
+	urlEnv := flag.Bool("url-env", def.URLEnv, "turn URL query parameters into extra environment variables (see security notes)")
+	maxClients := flag.Int("max-clients-per-session", def.MaxClientsPerSession, "concurrent viewers per session (0 = unlimited)")
+	pingInterval := flag.Duration("ping-interval", def.PingInterval, "websocket keepalive ping period")
+	scrollback := flag.Int("scrollback-bytes", def.ScrollbackBytes, "server-side replay buffer per session")
+	fontSize := flag.Int("font-size", def.FontSize, "terminal font size in px")
+	domRenderer := flag.Bool("dom-renderer", def.DOMRenderer, "use the DOM text renderer instead of canvas (for mobile GPU issues)")
+	enableGraphics := flag.Bool("enable-graphics", def.EnableGraphics, "inline graphics in the terminal (sixel + iTerm2 image protocol)")
+	disableHyperlink := flag.Bool("disable-hyperlink", def.DisableHyperlink, "turn off clickable links in the terminal")
+	middleclickPaste := flag.Bool("middleclick-paste", def.MiddleclickPaste, "paste clipboard on middle click")
 	title := flag.String("title", def.Title, "browser page title")
-	closeOnExit := flag.Bool("close_on_exit", def.CloseOnExit, "remove a session when its command exits")
+	closeOnExit := flag.Bool("close-on-exit", def.CloseOnExit, "remove a session when its command exits")
+	autoRespawn := flag.Bool("auto-respawn", def.AutoRespawn, "start a new session immediately when the last one ends")
+	tabShowPsname := flag.Bool("tab-show-psname", def.TabShowPsname, "include the foreground process name in auto tab titles")
+	tabShowCwd := flag.Bool("tab-show-cwd", def.TabShowCwd, "include the working directory basename in auto tab titles")
+	tabShowPS1 := flag.Bool("tab-show-ps1", def.TabShowPS1, "title tabs from the shell's OSC 0/2 window title (overrides tab-show-psname/cwd)")
+	tabTitle := flag.String("tab-title", def.TabTitle, "fixed tab title, overrides all auto-titling")
 	flag.Parse()
+
+	// --version and --upgrade short-circuit before any config/server work.
+	if *showVersion {
+		if buildDate != "" {
+			fmt.Printf("TtyServe version %s (built %s)\n", version, buildDate)
+		} else {
+			fmt.Printf("TtyServe version %s\n", version)
+		}
+		return
+	}
+	if *doUpgrade {
+		runUpgrade()
+		return
+	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
@@ -73,19 +100,19 @@ func main() {
 			cfg.Port = *port
 		case "command":
 			cfg.Command = *command
-		case "working_dir":
+		case "working-dir":
 			cfg.WorkingDir = *workingDir
 		case "env":
 			cfg.Env = splitCSV(*env)
-		case "session_persistence":
+		case "session-persistence":
 			cfg.SessionPersistence = *sessionPersistence
-		case "persistence_mode":
+		case "persistence-mode":
 			cfg.PersistenceMode = config.PersistenceMode(*persistenceMode)
-		case "multi_session":
+		case "multi-session":
 			cfg.MultiSession = *multiSession
-		case "max_sessions_per_client":
+		case "max-sessions-per-client":
 			cfg.MaxSessionsPerClient = *maxSessions
-		case "tab_bar_position":
+		case "tab-bar-position":
 			cfg.TabBarPosition = *tabBarPosition
 		case "users":
 			us, err := parseUsers(*users)
@@ -94,46 +121,58 @@ func main() {
 				return
 			}
 			cfg.Users = us
-		case "auth_realm":
+		case "auth-realm":
 			cfg.AuthRealm = *authRealm
-		case "proxy_header_name":
+		case "proxy-header-name":
 			cfg.ProxyHeaderName = *proxyHeaderName
-		case "idle_timeout":
+		case "idle-timeout":
 			cfg.IdleTimeout = *idleTimeout
-		case "cookie_name":
+		case "cookie-name":
 			cfg.CookieName = *cookieName
-		case "cookie_secure":
+		case "cookie-secure":
 			cfg.CookieSecure = *cookieSecure
-		case "allow_origins":
+		case "allow-origins":
 			cfg.AllowOrigins = splitCSV(*allowOrigins)
-		case "tls_cert_file":
+		case "tls-cert-file":
 			cfg.TLSCertFile = *tlsCert
-		case "tls_key_file":
+		case "tls-key-file":
 			cfg.TLSKeyFile = *tlsKey
 		case "readonly":
 			cfg.Readonly = *readonly
-		case "url_arg":
+		case "url-arg":
 			cfg.URLArg = *urlArg
-		case "url_env":
+		case "url-env":
 			cfg.URLEnv = *urlEnv
-		case "max_clients_per_session":
+		case "max-clients-per-session":
 			cfg.MaxClientsPerSession = *maxClients
-		case "ping_interval":
+		case "ping-interval":
 			cfg.PingInterval = *pingInterval
-		case "scrollback_bytes":
+		case "scrollback-bytes":
 			cfg.ScrollbackBytes = *scrollback
-		case "font_size":
+		case "font-size":
 			cfg.FontSize = *fontSize
-		case "enable_graphics":
+		case "dom-renderer":
+			cfg.DOMRenderer = *domRenderer
+		case "enable-graphics":
 			cfg.EnableGraphics = *enableGraphics
-		case "disable_hyperlink":
+		case "disable-hyperlink":
 			cfg.DisableHyperlink = *disableHyperlink
-		case "middleclick_paste":
+		case "middleclick-paste":
 			cfg.MiddleclickPaste = *middleclickPaste
 		case "title":
 			cfg.Title = *title
-		case "close_on_exit":
+		case "close-on-exit":
 			cfg.CloseOnExit = *closeOnExit
+		case "auto-respawn":
+			cfg.AutoRespawn = *autoRespawn
+		case "tab-show-psname":
+			cfg.TabShowPsname = *tabShowPsname
+		case "tab-show-cwd":
+			cfg.TabShowCwd = *tabShowCwd
+		case "tab-show-ps1":
+			cfg.TabShowPS1 = *tabShowPS1
+		case "tab-title":
+			cfg.TabTitle = *tabTitle
 		}
 	})
 	if flagErr != nil {
@@ -233,4 +272,36 @@ func parseUsers(s string) ([]config.User, error) {
 		out = append(out, config.User{Name: name, Password: pass})
 	}
 	return out, nil
+}
+
+func runUpgrade() {
+	cfg := selfupdate.Config{
+		RepoURL:        "https://github.com/SubhashBose/TtyServe",
+		BinaryPrefix:   "ttyserve-",
+		OSSep:          "-",
+		CurrentVersion: version, // your build-time var
+	}
+
+	fmt.Printf("Current version: %s\nChecking for updates…", version)
+
+	res, err := selfupdate.Update(cfg)
+
+	if res.LatestVersion != "" {
+		fmt.Printf(" Latest version: %s\n", res.LatestVersion)
+	} else {
+		fmt.Printf("\n")
+	}
+
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Update failed:", err)
+		os.Exit(1)
+	}
+
+	if !res.Updated {
+		fmt.Printf("Already up to date (latest: %s)\n", res.LatestVersion)
+		return
+	}
+
+	fmt.Printf("Successfully updated to v%s (asset: %s)\nPlease restart any running instances of the program.\n",
+		res.LatestVersion, res.AssetName)
 }

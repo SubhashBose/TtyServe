@@ -93,6 +93,16 @@ type Terminal struct {
 	closed      bool
 	exited      chan struct{}
 	exitErr     error
+
+	// activity marks that output arrived since the last TakeActivity();
+	// lets pollers skip idle terminals. reportedCwd is the last directory
+	// the shell announced via OSC 7 — exact and container/ssh-aware, so it
+	// takes precedence over the /proc guess. osc7 is owned by readLoop.
+	// All three are inert unless trackCwd is set.
+	trackCwd    bool
+	activity    bool
+	reportedCwd string
+	osc7        osc7Scanner
 }
 
 // Options configures a new terminal.
@@ -103,6 +113,10 @@ type Options struct {
 	WorkingDir      string
 	ScrollbackBytes int
 	Rows, Cols      uint16
+	// TrackCwd enables the machinery behind directory-tracking tab titles:
+	// OSC 7 scanning of output and the activity flag. Leave false when
+	// titles aren't shown so the read loop does zero extra work.
+	TrackCwd bool
 }
 
 // New spawns the command attached to a new PTY.
@@ -133,6 +147,7 @@ func New(opt Options) (*Terminal, error) {
 		subscribers: make(map[int]*Subscriber),
 		ring:        newRingBuffer(opt.ScrollbackBytes),
 		exited:      make(chan struct{}),
+		trackCwd:    opt.TrackCwd,
 	}
 	go t.readLoop()
 	go t.wait()
@@ -158,9 +173,21 @@ func (t *Terminal) readLoop() {
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
+			// Scan outside the lock; the scanner is owned by this goroutine.
+			var cwd string
+			var cwdOK bool
+			if t.trackCwd {
+				cwd, cwdOK = t.osc7.feed(chunk)
+			}
 			var dropped []*Subscriber
 			t.mu.Lock()
 			t.ring.Write(chunk)
+			if t.trackCwd {
+				t.activity = true
+				if cwdOK {
+					t.reportedCwd = cwd
+				}
+			}
 			for id, sub := range t.subscribers {
 				if !sub.push(chunk) {
 					delete(t.subscribers, id)
@@ -223,10 +250,28 @@ func (t *Terminal) Resize(rows, cols uint16) error {
 	return pty.Setsize(t.ptmx, &pty.Winsize{Rows: rows, Cols: cols})
 }
 
-// Cwd returns the child process's current working directory, or "" when it
-// cannot be determined (process exited, or a platform without /proc such as
-// macOS/Windows — auto tab titles simply stay at their initial value there).
+// TakeActivity reports whether output arrived since the last call, clearing
+// the flag. Pollers use it to skip idle terminals entirely.
+func (t *Terminal) TakeActivity() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	a := t.activity
+	t.activity = false
+	return a
+}
+
+// Cwd returns the terminal's current working directory: the OSC 7 path the
+// shell reported, when shell integration is present (exact, and correct for
+// ssh/containers), else the /proc guess for the direct child. "" when
+// neither is available (process exited, or a platform without /proc — auto
+// tab titles simply stay at their initial value there).
 func (t *Terminal) Cwd() string {
+	t.mu.Lock()
+	reported := t.reportedCwd
+	t.mu.Unlock()
+	if reported != "" {
+		return reported
+	}
 	if t.cmd.Process == nil {
 		return ""
 	}
