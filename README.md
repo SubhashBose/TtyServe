@@ -90,13 +90,12 @@ defaults. See `config.example.yaml` for the annotated file. Key options:
 |---|---|
 | `listen` | IP address, interface name, or `unix://<path>` socket (default: all interfaces) |
 | `port` | TCP port (default 7681; ignored for unix sockets) |
-
 | `session-persistence` | master on/off for persistence |
 | `persistence-mode` | `user`, `short_term` or `proxy_header` |
 | `proxy-header-name` | header carrying the identity in `proxy_header` mode (default `X-Forwarded-User`) |
 | `multi-session` | enable tabs / multiple terminals |
 | `tab-bar-position` | `top` or `right` |
-| `users` | list of `{name, password}` for `user` mode |
+| `users` | list of comma-separated `name:password` pairs for `user` mode |
 | `idle-timeout` | short-term session lifetime when disconnected |
 | `command` / `env` / `working-dir` | what each terminal runs; `command` is a full shell-style line, e.g. `"/usr/bin/tmux new -A -s main"`. `env` entries may contain `${header.NAME}`, expanded from the request header at spawn time (e.g. `USER=${header.X-Forwarded-User}`) |
 | `readonly` | `true` = read-only terminals, no client input |

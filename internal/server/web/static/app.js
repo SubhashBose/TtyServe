@@ -35,7 +35,8 @@
 
   // Keep a sticky "reconnecting…" up while any tab is down and retrying.
   function refreshConnStatus() {
-    if (!cfg.persistence) return; // ephemeral tabs don't reconnect
+    // (Ephemeral tabs count too: their respawn probe loop is a form of
+    // reconnecting, and awaitRestart/exited states are excluded below.)
     let down = 0;
     for (const e of panes.values()) {
       if (!e.connected && !e.exited && !e.awaitRestart) down++;
@@ -51,7 +52,15 @@
   const S_EXIT = 0x65;   // 'e' — session stream ended
   const S_REPLAY = 0x72; // 'r' — scrollback repaint (suppress query replies)
 
+  // In persistence-off mode there is no cookie; the page identity travels as
+  // ?eid=... on every request so they resolve to the same server client.
+  function withEid(path) {
+    if (cfg.persistence || !cfg.ephemeralId) return path;
+    return path + (path.includes("?") ? "&" : "?") + "eid=" + encodeURIComponent(cfg.ephemeralId);
+  }
+
   async function api(method, path, body) {
+    path = withEid(path);
     const opts = { method, headers: {} };
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
@@ -124,7 +133,7 @@
 
   function connect(entry, sessionId) {
     // Resolve relative to the page so the app works under any base path.
-    const u = new URL("ws?session=" + encodeURIComponent(sessionId), location.href);
+    const u = new URL(withEid("ws?session=" + encodeURIComponent(sessionId)), location.href);
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(proto + "//" + u.host + u.pathname + u.search);
     ws.binaryType = "arraybuffer";
@@ -176,7 +185,31 @@
       entry.connected = false;
       updateTabState(entry);
       if (!cfg.persistence) {
-        entry.term.write("\r\n\x1b[31m[disconnected]\x1b[0m\r\n");
+        // Ephemeral sessions die with their socket — no reconnect, and the
+        // server has already discarded the session. The UX still mirrors
+        // persistent mode: a shell exit shows [session ended] with restart
+        // on Enter or tab removal; a non-exit disconnect (server restart /
+        // network drop) auto-spawns a replacement once the server answers.
+        if (entry.exited) {
+          // Keep the pane with an Enter-to-restart prompt in the same cases
+          // persistent mode would: single-session (without auto-respawn),
+          // or close-on-exit: false. The server has already discarded the
+          // session either way, so Enter creates a fresh one for this tab.
+          if ((!cfg.multiSession && !cfg.autoRespawn) || !cfg.closeOnExit) {
+            entry.exited = false;
+            entry.awaitRestart = true;
+            entry.sessionGone = true; // Enter creates a fresh session
+            entry.term.write("\r\n\x1b[33m[session ended]\x1b[0m — press \x1b[1mEnter\x1b[0m to restart\r\n");
+            showStatus("session ended — press Enter to restart");
+          } else {
+            entry.term.write("\r\n\x1b[33m[session ended]\x1b[0m\r\n");
+            showStatus("session ended");
+            setTimeout(() => removeTabUI(sessionId), 600);
+          }
+        } else {
+          entry.term.write("\r\n\x1b[31m[disconnected]\x1b[0m reconnecting…\r\n");
+          ephemeralRespawn(entry, sessionId);
+        }
         return;
       }
       // If the server signalled exit, or on any close, verify the session
@@ -612,6 +645,34 @@
     entry._backoff = 500;
     entry.term.reset();
     connect(entry, entry.id);
+  }
+
+  // Ephemeral-mode replacement after a non-exit disconnect (server restart
+  // or network drop — indistinguishable, and the session is gone either
+  // way). Mirrors persistent mode's stale-state recovery: keep probing with
+  // backoff until the server answers, then spawn a replacement terminal.
+  async function ephemeralRespawn(entry, sessionId) {
+    if (!panes.has(sessionId)) return; // tab closed meanwhile
+    let up = true;
+    try { await api("GET", "api/sessions"); } catch (e) { up = false; }
+    if (!up) {
+      refreshConnStatus(); // sticky "reconnecting…"
+      entry._backoff = Math.min((entry._backoff || 500) * 1.6, 5000);
+      entry.reconnectTimer = setTimeout(() => ephemeralRespawn(entry, sessionId), entry._backoff);
+      return;
+    }
+    if (cfg.multiSession) {
+      removeTabUI(sessionId, true); // respawns a fresh tab if this was the last
+      return;
+    }
+    entry.awaitRestart = true; // Enter works as fallback if the spawn fails
+    entry.sessionGone = true;
+    await restartSession(entry);
+    if (entry.sessionGone && panes.has(sessionId)) {
+      // Spawn failed (server flapping): retry on the same backoff schedule.
+      entry._backoff = Math.min((entry._backoff || 500) * 1.6, 5000);
+      entry.reconnectTimer = setTimeout(() => ephemeralRespawn(entry, sessionId), entry._backoff);
+    }
   }
 
   async function closeSession(id) {

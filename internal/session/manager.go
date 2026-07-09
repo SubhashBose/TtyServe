@@ -59,7 +59,12 @@ func NewManager(cfg config.Config) *Manager {
 		clients:  make(map[string]*Client),
 		stop:     make(chan struct{}),
 	}
-	if cfg.SessionPersistence && cfg.PersistenceMode == config.PersistShortTerm {
+	// The reaper collects idle clients in short_term mode — and in ephemeral
+	// mode, where every page load mints a fresh identity: sessions die with
+	// their socket there, but the client entries would otherwise accumulate
+	// in m.clients forever (every page hit, incl. bots, creates one).
+	if !cfg.SessionPersistence ||
+		(cfg.SessionPersistence && cfg.PersistenceMode == config.PersistShortTerm) {
 		go m.reaper()
 	}
 	// Auto titles only matter when tabs are visible, sessions outlive a

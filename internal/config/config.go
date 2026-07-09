@@ -305,6 +305,11 @@ func (c *Config) Validate() error {
 		default:
 			return fmt.Errorf("persistence-mode must be 'user', 'short_term' or 'proxy_header', got %q", c.PersistenceMode)
 		}
+	} else if c.IdleTimeout <= 0 {
+		// Ephemeral mode uses the idle timeout to sweep stale page
+		// identities; a non-positive value would reap a client in the gap
+		// between page load and websocket connect.
+		c.IdleTimeout = 5 * time.Minute
 	}
 	if c.CookieName == "" {
 		c.CookieName = "ttyserve_session"

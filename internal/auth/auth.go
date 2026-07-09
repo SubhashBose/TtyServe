@@ -59,9 +59,19 @@ type Identity struct {
 // For user mode it validates basic-auth and, on failure, returns ErrUnauthorized
 // (the caller should send a 401 with WWW-Authenticate).
 func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
-	// Persistence off: every connection is its own ephemeral identity.
+	// Persistence off: identity is a per-page ephemeral token. The index
+	// page mints one (no eid param) and echoes it to the frontend, which
+	// sends it back as ?eid=... on the API and websocket so all of a page's
+	// requests resolve to the same client. No cookie, no cross-page sharing:
+	// a reload gets a fresh identity, and the session dies with the socket.
 	if !a.cfg.SessionPersistence {
-		return Identity{Key: "ephemeral-" + randToken(8)}, nil
+		eid := r.URL.Query().Get("eid")
+		// Cap hostile/garbage tokens: an over-long eid gets a fresh identity
+		// instead of stuffing an arbitrarily large key into the client map.
+		if eid == "" || len(eid) > 64 {
+			eid = randToken(16)
+		}
+		return Identity{Key: "ephemeral-" + eid}, nil
 	}
 
 	switch a.cfg.PersistenceMode {

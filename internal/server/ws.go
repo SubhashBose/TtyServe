@@ -41,6 +41,17 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 		conn.Close()
 		return
 	}
+	// Ephemeral mode: the session dies with its socket (no reaper runs). Once
+	// this subscriber is gone and none remain, discard it so its shell isn't
+	// leaked. Registered before unsub so it runs after it (LIFO), seeing the
+	// post-unsubscribe count.
+	if !s.cfg.SessionPersistence {
+		defer func() {
+			if term.SubscriberCount() == 0 {
+				_ = s.mgr.CloseSession(cl, sess.ID)
+			}
+		}()
+	}
 	defer unsub()
 
 	s.mgr.ConnAttached(cl)
@@ -97,10 +108,11 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 	}
 
 	done := make(chan struct{})
+	quit := make(chan struct{}) // closed by the reader when the conn drops
 
 	// Writer: coalesced terminal output + keepalive pings -> websocket.
-	// Sole writer to conn from here on. Closing conn on exit unblocks the
-	// reader loop below.
+	// Sole writer to conn from here on. Returns promptly on quit so cleanup
+	// (idle accounting, ephemeral discard) isn't delayed until the next ping.
 	go func() {
 		defer close(done)
 		defer conn.Close()
@@ -108,6 +120,8 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 		defer ping.Stop()
 		for {
 			select {
+			case <-quit:
+				return
 			case <-sub.Notify():
 				chunk, open := sub.Take()
 				if len(chunk) > 0 {
@@ -158,6 +172,7 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 		}
 	}
 
+	close(quit) // wake the writer immediately instead of on the next ping
 	conn.Close()
 	<-done
 }

@@ -286,12 +286,16 @@ type pageData struct {
 	MiddleclickPaste   bool
 	TabShowPS1         bool
 	AutoRespawn        bool
+	CloseOnExit        bool
 	DOMRenderer        bool
 	// Sessions is inlined into the page so the frontend can build tabs and
 	// open websockets immediately, without a follow-up API round trip.
 	Sessions []session.SessionInfo
 	// V is the asset version appended to static URLs (cache busting).
 	V string
+	// EphemeralID is the page identity token in persistence-off mode, echoed
+	// back by the frontend as ?eid=... so all its requests share a client.
+	EphemeralID string
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -303,11 +307,23 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Guarantee at least one session exists on first load.
-	args, env := s.spawnParams(r)
-	if _, err := s.mgr.EnsureDefaultSession(cl, args, env); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	// Guarantee at least one session exists on first load — but not in
+	// ephemeral mode: there each page load is a fresh identity with no
+	// reaper, so pre-spawning here would leak a shell for every page hit
+	// (bots, prefetch). The frontend creates the session on demand instead,
+	// and it's discarded when the socket closes.
+	if s.cfg.SessionPersistence {
+		args, env := s.spawnParams(r)
+		if _, err := s.mgr.EnsureDefaultSession(cl, args, env); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	// In ephemeral mode, hand the frontend the page's identity token so its
+	// API/websocket requests resolve to this same client.
+	ephemeralID := ""
+	if !s.cfg.SessionPersistence {
+		ephemeralID = strings.TrimPrefix(cl.ID, "ephemeral-")
 	}
 	// The page embeds the client's session list and mints cookies: it is
 	// personalized state and must never be served from any cache — a stale
@@ -328,9 +344,11 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		MiddleclickPaste:   s.cfg.MiddleclickPaste,
 		TabShowPS1:         s.cfg.TabShowPS1,
 		AutoRespawn:        s.cfg.AutoRespawn,
+		CloseOnExit:        s.cfg.CloseOnExit,
 		DOMRenderer:        s.cfg.DOMRenderer,
 		Sessions:           cl.List(),
 		V:                  s.assetVer,
+		EphemeralID:        ephemeralID,
 	})
 }
 

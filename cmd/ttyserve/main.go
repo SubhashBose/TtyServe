@@ -32,7 +32,7 @@ func main() {
 	// flags the user actually set override the config file.
 	cfgPath := flag.String("config", "", "path to YAML config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	doUpgrade := flag.Bool("upgrade", false, "upgrade the binary to the latest release and exit")
+	doUpgrade := flag.Bool("upgrade", false, "self-upgrade the binary to the latest release and exit")
 	listen := flag.String("listen", def.Listen, "IP address, interface name, or unix://<path> socket to listen on (default: all interfaces)")
 	port := flag.Int("port", def.Port, "TCP port to listen on")
 	command := flag.String("command", def.Command, "shell-style command line run for each terminal")
@@ -70,6 +70,19 @@ func main() {
 	tabShowCwd := flag.Bool("tab-show-cwd", def.TabShowCwd, "include the working directory basename in auto tab titles")
 	tabShowPS1 := flag.Bool("tab-show-ps1", def.TabShowPS1, "title tabs from the shell's OSC 0/2 window title (overrides tab-show-psname/cwd)")
 	tabTitle := flag.String("tab-title", def.TabTitle, "fixed tab title, overrides all auto-titling")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "TtyServe v%s - Serve Terminal on the web\n\n", version)
+		fmt.Fprintf(os.Stderr, "Command line Usage:\n")
+		fmt.Fprintf(os.Stderr, "  %s --command \"<program> [args...]\" [options]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  or\n")
+		fmt.Fprintf(os.Stderr, "  %s --config config.yaml\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Can be configured through CLI options, or YAML config file, or combined.\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\n\nFull documentation: https://github.com/SubhashBose/TtyServe\n")
+	}
+
 	flag.Parse()
 
 	// --version and --upgrade short-circuit before any config/server work.
@@ -215,14 +228,14 @@ func main() {
 		// Mirror the user's listen syntax: unix://<path> for sockets (with
 		// an explicit tls= field), http(s)://host:port for TCP.
 		if sp.Network == "unix" {
-			log.Printf("ttyserve listening on unix://%s (tls=%v persistence=%v mode=%s multi=%v)",
+			log.Printf("TtyServe listening on unix://%s (tls=%v persistence=%v mode=%s multi=%v)",
 				ln.Addr(), sp.TLS, cfg.SessionPersistence, cfg.PersistenceMode, cfg.MultiSession)
 		} else {
 			scheme := "http"
 			if sp.TLS {
 				scheme = "https"
 			}
-			log.Printf("ttyserve listening on %s://%s (persistence=%v mode=%s multi=%v)",
+			log.Printf("TtyServe listening on %s://%s (persistence=%v mode=%s multi=%v)",
 				scheme, ln.Addr(), cfg.SessionPersistence, cfg.PersistenceMode, cfg.MultiSession)
 		}
 		go func(sp config.ListenSpec, ln net.Listener) {
