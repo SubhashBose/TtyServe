@@ -178,14 +178,16 @@ The directory comes from two sources, best first:
   every request, so an actively-used browser never loses its identity; only
   idle clients age out (enforced server-side by the reaper regardless).
 - **Dead-peer detection** — websocket read deadlines + pong handler reclaim
-  connections to vanished clients within ~2× `ping-interval`.
+  connections to vanished clients within ~3× `ping-interval` (=60s by
+  default) — which is also the window within which a connection that
+  survives a network outage resumes seamlessly.
 - **Exit signalling** — when a shell exits, the server sends an `e` opcode;
   the browser marks the tab ended, verifies against the session API, and
   removes it (with a guard against respawn loops if the command crashes
   instantly). No infinite reconnect attempts to dead sessions. With
   `close-on-exit: false` the session is kept: the tab shows
   `[session ended]` and pressing Enter respawns the command in place
-  (`POST /api/sessions/{id}/restart`). When the *last* session ends, nothing
+  (`POST /sessions/{id}/restart`). When the *last* session ends, nothing
   respawns by default — multi-session leaves the tab bar empty,
   single-session offers restart on Enter; set `auto-respawn: true` for the
   old immediately-start-a-new-one behavior.
@@ -203,6 +205,9 @@ The directory comes from two sources, best first:
   or environment variables to the spawned command. Treat them as remote
   command-line access: enable only behind authentication you trust, and never
   with `allow-origins: ["*"]`.
+- Behind a path-mounting proxy that hosts other apps on the same origin, set
+  `cookie-path` to the mount prefix so sibling apps never receive the session
+  cookie.
 - `proxy_header` mode trusts the header blindly — it is only safe when clients
   cannot reach ttyserve directly. Bind to a `unix://` socket or `127.0.0.1`,
   and configure the proxy to strip/overwrite the header on incoming requests.

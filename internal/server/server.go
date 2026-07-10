@@ -192,8 +192,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/static/", s.handleStatic)
 
 	mux.HandleFunc("/", s.handleIndex)
-	mux.HandleFunc("/api/sessions", s.handleSessions)     // GET list, POST create
-	mux.HandleFunc("/api/sessions/", s.handleSessionItem) // PATCH rename, DELETE close, POST {id}/restart
+	mux.HandleFunc("/sessions", s.handleSessions)     // GET list, POST create
+	mux.HandleFunc("/sessions/", s.handleSessionItem) // PATCH rename, DELETE close, POST {id}/restart
 	mux.HandleFunc("/ws", s.handleWS)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -220,8 +220,17 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) (*session.Clien
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return nil, false
 	}
+	// The cookie carries no Path attribute, so the browser scopes it to the
+	// directory of the URL it requested — including any proxy mount prefix
+	// the server never sees. That only works when Set-Cookie is emitted on
+	// endpoints directly under the app root ("/", "/sessions", "/ws"): item
+	// paths like /sessions/<id> have a deeper directory and would mint
+	// shadow cookies, so they never set one.
 	if id.SetCookie != nil {
-		http.SetCookie(w, id.SetCookie)
+		switch r.URL.Path {
+		case "/", "/sessions", "/ws":
+			http.SetCookie(w, id.SetCookie)
+		}
 	}
 	cl := s.mgr.Client(id.Key)
 	// Any authenticated request counts as activity: the reaper should only
@@ -352,7 +361,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/sessions -> list; POST /api/sessions -> create.
+// GET /sessions -> list; POST /sessions -> create.
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	cl, ok := s.resolve(w, r)
 	if !ok {
@@ -386,19 +395,19 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// PATCH /api/sessions/{id} {title} -> rename; DELETE -> close.
+// PATCH /sessions/{id} {title} -> rename; DELETE -> close.
 func (s *Server) handleSessionItem(w http.ResponseWriter, r *http.Request) {
 	cl, ok := s.resolve(w, r)
 	if !ok {
 		return
 	}
-	rest := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+	rest := strings.TrimPrefix(r.URL.Path, "/sessions/")
 	id, action, hasAction := strings.Cut(rest, "/")
 	if id == "" {
 		http.NotFound(w, r)
 		return
 	}
-	// PUT /api/sessions/order {order: [ids]} -> rearrange tabs. Session ids
+	// PUT /sessions/order {order: [ids]} -> rearrange tabs. Session ids
 	// are UUIDs, so "order" cannot collide with one.
 	if id == "order" && !hasAction {
 		if r.Method != http.MethodPut {
@@ -422,7 +431,7 @@ func (s *Server) handleSessionItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if hasAction {
-		// POST /api/sessions/{id}/restart: respawn an exited command
+		// POST /sessions/{id}/restart: respawn an exited command
 		// (close_on_exit=false keeps the session around after exit).
 		if action == "restart" && r.Method == http.MethodPost {
 			if _, err := s.mgr.RestartSession(cl, id); err != nil {

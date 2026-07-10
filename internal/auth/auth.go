@@ -135,12 +135,24 @@ func (a *Authenticator) buildCookie(value string) *http.Cookie {
 		life = min
 	}
 	return &http.Cookie{
-		Name:     a.cfg.CookieName,
-		Value:    value,
-		Path:     "/",
+		Name:  a.cfg.CookieName,
+		Value: value,
+		// No Path attribute: per RFC 6265, the browser then scopes the
+		// cookie to the directory of the URL *it* requested — which includes
+		// any proxy mount prefix the server never sees (/code/proxy/7681/ →
+		// Path=/code/proxy/7681). Automatic scoping keeps the token away
+		// from sibling apps on the same host. Requires that Set-Cookie is
+		// only emitted on requests whose browser-side directory is the app
+		// root — the index and /ws — which resolve() enforces.
 		HttpOnly: true,
-		Secure:   a.cfg.CookieSecure,
-		SameSite: http.SameSiteStrictMode,
+		Secure: a.cfg.CookieSecure,
+		// Lax, not Strict: Strict cookies are withheld from top-level
+		// navigations in tabs that were originally opened cross-site — and
+		// reloads inherit that initiator, so such a tab would silently lose
+		// its identity on every refresh. Lax still withholds the cookie on
+		// cross-site fetches and non-GET requests (the CSRF-relevant ones),
+		// and the websocket is guarded by the same-host Origin check.
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(life / time.Second),
 	}
 }

@@ -23,6 +23,8 @@ const (
 	srvReplay = 'r' // payload: scrollback repaint — client must NOT reply to
 	// capability queries in it (they were already answered live; replying
 	// again injects the responses as phantom input at the shell prompt)
+	srvPong = 'p' // reply to a client '2' ping; lets the client detect a
+	// dead network (protocol-level ping/pong is invisible to browser JS)
 )
 
 type resizePayload struct {
@@ -64,7 +66,11 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 	}
 
 	// Dead-peer detection: require a pong (or any message) within pongWait.
-	pongWait := 2 * s.cfg.PingInterval
+	// 3× the ping interval forgives two lost ping cycles and doubles as the
+	// window in which a connection that survives a network outage can
+	// resume seamlessly (the client marks tabs "stalled" client-side well
+	// before this deadline, without closing them).
+	pongWait := 3 * s.cfg.PingInterval
 	_ = conn.SetReadDeadline(time.Now().Add(pongWait))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -108,7 +114,8 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 	}
 
 	done := make(chan struct{})
-	quit := make(chan struct{}) // closed by the reader when the conn drops
+	quit := make(chan struct{})    // closed by the reader when the conn drops
+	pong := make(chan struct{}, 1) // reader requests an app-level pong reply
 
 	// Writer: coalesced terminal output + keepalive pings -> websocket.
 	// Sole writer to conn from here on. Returns promptly on quit so cleanup
@@ -122,6 +129,10 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 			select {
 			case <-quit:
 				return
+			case <-pong:
+				if err := sendFrame(srvPong, nil); err != nil {
+					return
+				}
 			case <-sub.Notify():
 				chunk, open := sub.Take()
 				if len(chunk) > 0 {
@@ -166,7 +177,12 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 				_ = term.Resize(rp.Rows, rp.Cols)
 			}
 		case msgPing:
-			// app-level keepalive, no-op
+			// App-level keepalive: answer via the writer goroutine (sole
+			// writer). Coalescing to one pending pong is fine.
+			select {
+			case pong <- struct{}{}:
+			default:
+			}
 		default:
 			// ignore unknown opcodes
 		}

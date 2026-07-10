@@ -51,6 +51,7 @@
   const S_OUTPUT = 0x6f; // 'o'
   const S_EXIT = 0x65;   // 'e' — session stream ended
   const S_REPLAY = 0x72; // 'r' — scrollback repaint (suppress query replies)
+  const S_PONG = 0x70;   // 'p' — reply to our C_PING (liveness)
 
   // In persistence-off mode there is no cookie; the page identity travels as
   // ?eid=... on every request so they resolve to the same server client.
@@ -59,22 +60,35 @@
     return path + (path.includes("?") ? "&" : "?") + "eid=" + encodeURIComponent(cfg.ephemeralId);
   }
 
-  async function api(method, path, body) {
+  // timeoutMs (optional) aborts the request — used by recurring/probing
+  // requests so an unresponsive network can't leave them hanging for the
+  // browser's multi-minute default and piling up behind each other.
+  async function api(method, path, body, timeoutMs) {
     path = withEid(path);
     const opts = { method, headers: {} };
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
-    const res = await fetch(path, opts);
-    if (!res.ok) {
-      // Surface the server's message (e.g. "session limit reached ...").
-      let msg = "";
-      try { msg = (await res.text()).trim(); } catch (e) {}
-      throw new Error(msg || method + " " + path + " -> " + res.status);
+    let timer = null;
+    if (timeoutMs && window.AbortController) {
+      const ctl = new AbortController();
+      opts.signal = ctl.signal;
+      timer = setTimeout(() => ctl.abort(), timeoutMs);
     }
-    if (res.status === 204) return null;
-    return res.json();
+    try {
+      const res = await fetch(path, opts);
+      if (!res.ok) {
+        // Surface the server's message (e.g. "session limit reached ...").
+        let msg = "";
+        try { msg = (await res.text()).trim(); } catch (e) {}
+        throw new Error(msg || method + " " + path + " -> " + res.status);
+      }
+      if (res.status === 204) return null;
+      return res.json();
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function openLink(uri) {
@@ -145,6 +159,7 @@
       // rendered. No-op on a fresh terminal.
       entry.term.reset();
       entry.connected = true;
+      entry.lastSeen = Date.now();
       entry._backoff = 500;
       updateTabState(entry);
       showStatus("connected");
@@ -158,6 +173,15 @@
 
     ws.onmessage = (ev) => {
       const data = new Uint8Array(ev.data);
+      entry.lastSeen = Date.now(); // any frame proves the link is alive
+      if (entry.stalled) {
+        // The connection survived the outage: seamless resume, nothing lost.
+        entry.stalled = false;
+        entry.connected = true;
+        updateTabState(entry);
+        showStatus("connected");
+        refreshConnStatus();
+      }
       if (data.length === 0) return;
       if (data[0] === S_OUTPUT) {
         entry.term.write(data.subarray(1));
@@ -183,6 +207,7 @@
     ws.onclose = async () => {
       if (!panes.has(sessionId)) return; // tab was closed locally
       entry.connected = false;
+      entry.stalled = false;
       updateTabState(entry);
       if (!cfg.persistence) {
         // Ephemeral sessions die with their socket — no reconnect, and the
@@ -217,7 +242,9 @@
       // session whose shell has exited.
       let alive;
       try {
-        const list = await api("GET", "api/sessions");
+        // Bounded: a hung check on a dead network must not stall the
+        // reconnect backoff for the browser's multi-minute default.
+        const list = await api("GET", "sessions", undefined, 8000);
         alive = list.some((s) => s.id === sessionId);
       } catch (e) {
         // Network down: trust the exit signal if we got one, else keep retrying.
@@ -479,7 +506,8 @@
     const entry = {
       id: info.id, term, fit, pane, tabEl, titleEl,
       ws: null, connected: false, exited: false, awaitRestart: false,
-      sessionGone: false, replaying: false, reconnectTimer: null, _backoff: 500,
+      sessionGone: false, replaying: false, stalled: false, lastSeen: 0,
+      reconnectTimer: null, _backoff: 500,
       renderer: null, rendererLoaded: false,
     };
     panes.set(info.id, entry);
@@ -491,7 +519,7 @@
   async function saveOrder() {
     const ids = Array.from(tabbar.querySelectorAll(".tab"))
       .map((t) => t.dataset.sid).filter(Boolean);
-    try { await api("PUT", "api/sessions/order", { order: ids }); } catch (e) {}
+    try { await api("PUT", "sessions/order", { order: ids }); } catch (e) {}
   }
 
   function activate(id) {
@@ -546,7 +574,7 @@
       titleEl.removeEventListener("blur", onBlur);
       const next = titleEl.textContent.trim();
       if (commit && next && next !== old) {
-        api("PATCH", "api/sessions/" + encodeURIComponent(id), { title: next })
+        api("PATCH", "sessions/" + encodeURIComponent(id), { title: next })
           .catch(() => { titleEl.textContent = old; });
       } else {
         titleEl.textContent = old;
@@ -618,7 +646,7 @@
     if (entry.sessionGone) {
       let info;
       try {
-        info = await api("POST", "api/sessions" + location.search);
+        info = await api("POST", "sessions" + location.search);
       } catch (e) {
         showStatus(e.message || "cannot start session");
         return;
@@ -635,7 +663,7 @@
       return;
     }
     try {
-      await api("POST", "api/sessions/" + encodeURIComponent(entry.id) + "/restart");
+      await api("POST", "sessions/" + encodeURIComponent(entry.id) + "/restart");
     } catch (e) {
       showStatus("restart failed");
       return;
@@ -654,7 +682,7 @@
   async function ephemeralRespawn(entry, sessionId) {
     if (!panes.has(sessionId)) return; // tab closed meanwhile
     let up = true;
-    try { await api("GET", "api/sessions"); } catch (e) { up = false; }
+    try { await api("GET", "sessions", undefined, 8000); } catch (e) { up = false; }
     if (!up) {
       refreshConnStatus(); // sticky "reconnecting…"
       entry._backoff = Math.min((entry._backoff || 500) * 1.6, 5000);
@@ -676,7 +704,7 @@
   }
 
   async function closeSession(id) {
-    try { await api("DELETE", "api/sessions/" + encodeURIComponent(id)); } catch (e) {}
+    try { await api("DELETE", "sessions/" + encodeURIComponent(id)); } catch (e) {}
     removeTabUI(id);
   }
 
@@ -684,7 +712,7 @@
     try {
       // Forward the page query so url_arg/url_env apply to new tabs too;
       // empty title -> server default.
-      const info = await api("POST", "api/sessions" + location.search);
+      const info = await api("POST", "sessions" + location.search);
       createTab(info);
       activate(info.id);
     } catch (e) {
@@ -695,10 +723,17 @@
   // Reconcile with the server: update titles (auto cwd titles, renames from
   // another window) and adopt sessions we have no tab for — e.g. when the
   // page was loaded from a stale cache or another window created a tab.
+  // In-flight guard + abort timeout: on an unresponsive network the ticks
+  // must not pile up behind a hung request or hog the connection pool the
+  // websocket reconnects need.
+  let syncInFlight = false;
   async function syncSessions() {
-    if (document.hidden) return;
+    if (document.hidden || syncInFlight) return;
+    syncInFlight = true;
     let list;
-    try { list = await api("GET", "api/sessions"); } catch (e) { return; }
+    try { list = await api("GET", "sessions", undefined, 8000); }
+    catch (e) { return; }
+    finally { syncInFlight = false; }
     for (const info of list) {
       const entry = panes.get(info.id);
       if (entry) {
@@ -731,6 +766,34 @@
     if (document.fonts && document.fonts.ready) {
       document.fonts.ready.then(() => fitActive());
     }
+    // Client-side liveness: browsers cannot see protocol-level ping/pong,
+    // so a silently dead network leaves the socket looking "open" for many
+    // minutes with no onclose — and no reconnect UI. Send an app-level ping
+    // every 10s; after 30s of total silence mark the tab STALLED (sticky
+    // "reconnecting…", disconnected dot) — but deliberately do NOT close
+    // the socket: TCP often survives an outage, and a surviving connection
+    // resumes seamlessly with nothing lost (in ephemeral mode, closing
+    // would even kill the session). We keep pinging; either a frame arrives
+    // again (instant recovery, handled in onmessage) or the socket dies for
+    // real and onclose runs the normal reconnect. Skipped while hidden
+    // (throttled timers would false-positive; resumes when visible).
+    setInterval(() => {
+      if (document.hidden) return;
+      const now = Date.now();
+      for (const entry of panes.values()) {
+        if (!entry.ws || entry.ws.readyState !== WebSocket.OPEN) continue;
+        if (entry.connected && now - (entry.lastSeen || now) > 30000) {
+          entry.connected = false;
+          entry.stalled = true;
+          updateTabState(entry);
+          refreshConnStatus(); // sticky "reconnecting…" immediately
+        }
+        // Keep pinging even while stalled: the reply (or the TCP reset of a
+        // dead connection) is what resolves the stall either way.
+        try { entry.ws.send(C_PING); } catch (e) {}
+      }
+    }, 10000);
+
     // React to connectivity changes: on restore, skip the pending backoff
     // and redial every disconnected tab immediately; while offline, show a
     // sticky notice (socket death detection can lag the actual outage).
@@ -738,13 +801,18 @@
       // Always replace the sticky "network offline" notice — the sockets
       // may have survived a short blip, in which case nothing below runs.
       showStatus("network restored");
-      if (!cfg.persistence) return;
       for (const [id, e] of panes) {
-        if (!e.connected && !e.exited && !e.awaitRestart) {
-          clearTimeout(e.reconnectTimer);
-          e._backoff = 500;
-          connect(e, id);
+        if (e.connected || e.exited || e.awaitRestart) continue;
+        if (e.ws && e.ws.readyState === WebSocket.OPEN) {
+          // Stalled but the socket may have survived: provoke a resolution
+          // (pong resumes it; a dead connection gets reset -> onclose).
+          try { e.ws.send(C_PING); } catch (err) {}
+          continue;
         }
+        if (!cfg.persistence) continue; // ephemeral retry loops handle theirs
+        clearTimeout(e.reconnectTimer);
+        e._backoff = 500;
+        connect(e, id);
       }
       refreshConnStatus(); // re-asserts sticky "reconnecting…" if tabs are down
     });
@@ -766,7 +834,7 @@
     // covers older cached pages and defensive corner cases.
     let list = Array.isArray(cfg.sessions) ? cfg.sessions : [];
     if (list.length === 0) {
-      try { list = await api("GET", "api/sessions"); } catch (e) {}
+      try { list = await api("GET", "sessions"); } catch (e) {}
     }
     if (!list || list.length === 0) {
       // Server guarantees one on index load, but be defensive.
