@@ -372,7 +372,9 @@
     if (entry.tabEl) entry.tabEl.classList.toggle("disconnected", !entry.connected);
   }
 
-  function createTab(info) {
+  // deferConnect skips the immediate websocket dial — used at page load so
+  // the active tab can connect first and the rest follow staggered.
+  function createTab(info, deferConnect) {
     const { term, fit } = makeTerminal();
 
     const pane = document.createElement("div");
@@ -511,7 +513,7 @@
       renderer: null, rendererLoaded: false,
     };
     panes.set(info.id, entry);
-    connect(entry, info.id);
+    if (!deferConnect) connect(entry, info.id);
     return entry;
   }
 
@@ -841,10 +843,23 @@
       await addSession();
       return;
     }
-    for (const info of list) createTab(info);
-    // Reactivate the tab that was active before the reload, if it survived.
+    // Build all tab UIs first (sockets deferred), then connect the
+    // previously-active tab immediately so it's usable right away, and
+    // stagger the remaining connections behind it in tab order.
     const last = recallActive();
-    activate(list.some((s) => s.id === last) ? last : list[0].id);
+    const activeTarget = list.some((s) => s.id === last) ? last : list[0].id;
+    for (const info of list) createTab(info, true);
+    activate(activeTarget);
+    connect(panes.get(activeTarget), activeTarget);
+    // One 200ms head start for the active tab, then dial the rest in tab
+    // order back-to-back (skipping any closed or already-dialed meanwhile).
+    setTimeout(() => {
+      for (const info of list) {
+        if (info.id === activeTarget) continue;
+        const e = panes.get(info.id);
+        if (e && panes.has(info.id) && !e.ws) connect(e, info.id);
+      }
+    }, 200);
   }
 
   init();

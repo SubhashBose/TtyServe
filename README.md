@@ -110,6 +110,7 @@ defaults. See `config.example.yaml` for the annotated file. Key options:
 | `tab-show-psname` / `tab-show-cwd` | auto tab title parts: process name / dir (default true) |
 | `tab-show-ps1` | title tabs from the shell's window title (default false) |
 | `tab-title` | fixed tab title, disables auto-titling |
+| `favicon` | custom icon: file path or `data:` URI (default: built-in) |
 | `tls-cert-file` / `tls-key-file` | enable TLS (applies to TCP and unix-socket listeners alike) |
 | `allow-origins` | extra websocket origins beyond same-host; `["*"]` = any |
 

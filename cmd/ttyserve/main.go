@@ -64,6 +64,7 @@ func main() {
 	disableHyperlink := flag.Bool("disable-hyperlink", def.DisableHyperlink, "turn off clickable links in the terminal")
 	middleclickPaste := flag.Bool("middleclick-paste", def.MiddleclickPaste, "paste clipboard on middle click")
 	title := flag.String("title", def.Title, "browser page title")
+	favicon := flag.String("favicon", def.Favicon, "custom favicon: file path or data: URI (default: built-in icon)")
 	closeOnExit := flag.Bool("close-on-exit", def.CloseOnExit, "remove a session when its command exits")
 	autoRespawn := flag.Bool("auto-respawn", def.AutoRespawn, "start a new session immediately when the last one ends")
 	tabShowPsname := flag.Bool("tab-show-psname", def.TabShowPsname, "include the foreground process name in auto tab titles")
@@ -174,6 +175,8 @@ func main() {
 			cfg.MiddleclickPaste = *middleclickPaste
 		case "title":
 			cfg.Title = *title
+		case "favicon":
+			cfg.Favicon = *favicon
 		case "close-on-exit":
 			cfg.CloseOnExit = *closeOnExit
 		case "auto-respawn":

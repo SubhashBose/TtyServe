@@ -13,6 +13,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"sort"
 	"strconv"
@@ -46,6 +47,13 @@ type Server struct {
 	tmpl     *template.Template
 	static   map[string]*staticAsset
 	assetVer string // combined hash of all static assets, for cache busting
+
+	// favicon is the custom icon loaded from cfg.Favicon when it is a file
+	// path (nil = use the embedded default). faviconHref is what the page's
+	// <link rel="icon"> points at: either the /favicon endpoint or, for
+	// data: URIs, the URI itself.
+	favicon     *staticAsset
+	faviconHref template.URL
 }
 
 // New constructs a Server.
@@ -75,7 +83,7 @@ func New(cfg config.Config, a *auth.Authenticator, mgr *session.Manager) (*Serve
 	for _, name := range names {
 		ver.Write([]byte(static[name].etag))
 	}
-	return &Server{
+	s := &Server{
 		cfg:      cfg,
 		auth:     a,
 		mgr:      mgr,
@@ -90,7 +98,34 @@ func New(cfg config.Config, a *auth.Authenticator, mgr *session.Manager) (*Serve
 			// websocket is authenticated by cookie in short_term mode.
 			CheckOrigin: func(r *http.Request) bool { return originAllowed(cfg, r) },
 		},
-	}, nil
+	}
+
+	// Resolve the favicon. A data: URI goes straight into the page's <link>
+	// (same formats HTML/CSS accept); a file path is read once here, failing
+	// fast on a bad config; empty uses the embedded default icon.
+	switch {
+	case strings.HasPrefix(cfg.Favicon, "data:"):
+		s.faviconHref = template.URL(cfg.Favicon)
+	case cfg.Favicon != "":
+		body, err := os.ReadFile(cfg.Favicon)
+		if err != nil {
+			return nil, fmt.Errorf("favicon: %w", err)
+		}
+		ctype := mime.TypeByExtension(path.Ext(cfg.Favicon))
+		if ctype == "" {
+			ctype = http.DetectContentType(body)
+		}
+		sum := sha256.Sum256(body)
+		s.favicon = &staticAsset{
+			body:  body,
+			etag:  fmt.Sprintf("%q", hex.EncodeToString(sum[:8])),
+			ctype: ctype,
+		}
+		s.faviconHref = template.URL("favicon?v=" + hex.EncodeToString(sum[:6]))
+	default:
+		s.faviconHref = template.URL("favicon?v=" + s.assetVer)
+	}
+	return s, nil
 }
 
 // loadStatic reads every embedded static file once, computing its ETag and a
@@ -142,12 +177,36 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	s.serveAsset(w, r, a)
+}
+
+// handleFavicon serves the configured icon (a file read at startup), or the
+// embedded default. Also mounted at /favicon.ico for clients that probe it.
+func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	a := s.favicon
+	if a == nil {
+		a = s.static["favicon.svg"]
+	}
+	if a == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.serveAsset(w, r, a)
+}
+
+func (s *Server) serveAsset(w http.ResponseWriter, r *http.Request, a *staticAsset) {
 	h := w.Header()
 	h.Set("Content-Type", a.ctype)
 	h.Set("ETag", a.etag)
-	// no-cache = cache but revalidate; assets change with the binary, so a
-	// cheap 304 beats both re-downloading and going stale after an upgrade.
-	h.Set("Cache-Control", "public, no-cache")
+	// Requests carrying the content-hash ?v= stamp may be cached forever:
+	// any content change changes the URL (the HTML referencing it is
+	// no-store). Bare requests (e.g. /favicon.ico probes) get
+	// cache-but-revalidate, where the ETag makes revalidation a cheap 304.
+	if r.URL.Query().Has("v") {
+		h.Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		h.Set("Cache-Control", "public, no-cache")
+	}
 	h.Set("Vary", "Accept-Encoding")
 	if r.Header.Get("If-None-Match") == a.etag {
 		w.WriteHeader(http.StatusNotModified)
@@ -195,6 +254,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/sessions", s.handleSessions)     // GET list, POST create
 	mux.HandleFunc("/sessions/", s.handleSessionItem) // PATCH rename, DELETE close, POST {id}/restart
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.HandleFunc("/favicon", s.handleFavicon)
+	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -305,6 +366,9 @@ type pageData struct {
 	// EphemeralID is the page identity token in persistence-off mode, echoed
 	// back by the frontend as ?eid=... so all its requests share a client.
 	EphemeralID string
+	// Favicon is a pre-vetted href (endpoint URL or data: URI); typed URL so
+	// the template doesn't filter the data: scheme.
+	Favicon template.URL
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -358,6 +422,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Sessions:           cl.List(),
 		V:                  s.assetVer,
 		EphemeralID:        ephemeralID,
+		Favicon:            s.faviconHref,
 	})
 }
 

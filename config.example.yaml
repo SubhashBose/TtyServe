@@ -84,6 +84,9 @@ enable-graphics: true        # inline images via sixel/iTerm2 protocol (default:
 disable-hyperlink: false     # true = links in output are not clickable (default: false)
 middleclick-paste: true      # paste clipboard on middle click (default: true)
 title: "TtyServe"            # browser page title (default: TtyServe)
+favicon: ""                  # custom favicon: a server file path, or a data: URI
+                             # e.g. "data:image/png;base64,...."
+                             # (default: "" = built-in terminal icon)
 close-on-exit: true          # remove session when its command exits (default: true);
                              # false keeps the tab, offering restart on Enter
 auto-respawn: false          # start a new session immediately when the last one

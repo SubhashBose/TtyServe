@@ -179,6 +179,11 @@ type Config struct {
 	// Title is the browser/page title.
 	Title string `yaml:"title"`
 
+	// Favicon overrides the built-in icon. Either a file path on the server,
+	// or a data: URI in any format HTML/CSS accept (e.g.
+	// "data:image/png;base64,...."). Empty = built-in terminal icon.
+	Favicon string `yaml:"favicon"`
+
 	// --- Tab titles ---
 	// Auto tab titles are "<process> <dir>" by default: the foreground
 	// process name and the shell's cwd basename. Precedence of the options
