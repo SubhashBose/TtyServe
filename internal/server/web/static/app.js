@@ -194,7 +194,12 @@
         entry.replaying = true;
         clearTimeout(entry._replayGuard);
         // Guard: never leave input blocked if the write callback is missed.
-        entry._replayGuard = setTimeout(() => { entry.replaying = false; }, 3000);
+        // Generous on purpose — a large replay (images) parsing on a
+        // background tab can take seconds, and clearing the flag before the
+        // parse finishes would let query replies leak to the shell as
+        // phantom input. The callback is the real signal; this is only
+        // stuck-flag insurance.
+        entry._replayGuard = setTimeout(() => { entry.replaying = false; }, 30000);
         entry.term.write(data.subarray(1), () => {
           clearTimeout(entry._replayGuard);
           entry.replaying = false;
@@ -388,6 +393,18 @@
     pane.appendChild(inner);
     termsEl.appendChild(pane);
     term.open(inner); // renderer upgrade happens on first activation
+    // Background tabs are never fitted (their pane is display:none), so
+    // xterm would sit at the default 80x24 — and a scrollback replay
+    // produced at the real width would wrap and mis-position, exposing old
+    // ring content as garbage when the tab is later activated and reflowed.
+    // All panes share one container, so the active tab's grid is the right
+    // size for every tab: adopt it up front.
+    {
+      const act = panes.get(activeId);
+      if (act && act.term.cols > 2 && act.term.rows > 1) {
+        try { term.resize(act.term.cols, act.term.rows); } catch (e) {}
+      }
+    }
 
     if (!cfg.readonly) {
       term.onData((d) => {
@@ -853,11 +870,19 @@
     connect(panes.get(activeTarget), activeTarget);
     // One 200ms head start for the active tab, then dial the rest in tab
     // order back-to-back (skipping any closed or already-dialed meanwhile).
+    // By now the active tab has been fitted; adopt its grid on each
+    // background terminal BEFORE connecting, so the incoming replay parses
+    // at the width it was produced for (see the note in createTab).
     setTimeout(() => {
+      const act = panes.get(activeTarget);
       for (const info of list) {
         if (info.id === activeTarget) continue;
         const e = panes.get(info.id);
-        if (e && panes.has(info.id) && !e.ws) connect(e, info.id);
+        if (!e || !panes.has(info.id) || e.ws) continue;
+        if (act && act.term.cols > 2 && act.term.rows > 1) {
+          try { e.term.resize(act.term.cols, act.term.rows); } catch (err) {}
+        }
+        connect(e, info.id);
       }
     }, 200);
   }
