@@ -10,6 +10,11 @@
 # (default: "" = all interfaces)
 listen: ""
 port: 7681                   # TCP port, ignored for unix sockets (default: 7681)
+socket-perm: ""              # unix socket permissions: mode[:user[:group]],
+                             # e.g. "0660" or "0660::www-data" or "0600:subhash"
+                             # (names or numeric ids; empty part = unchanged;
+                             # default: "" = umask decides). Connecting to a
+                             # unix socket requires WRITE permission on it.
 
 # Command run for each terminal session. Arguments go on the same line,
 # shell-style; quote arguments containing spaces. (default: $SHELL or /bin/bash)

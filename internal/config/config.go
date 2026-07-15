@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
 	"regexp"
 	"strconv"
 	"strings"
@@ -65,6 +66,12 @@ type Config struct {
 
 	// Port is the TCP port to listen on (ignored for unix sockets).
 	Port int `yaml:"port"`
+
+	// SocketPerm sets ownership/permissions on a unix:// listen socket:
+	// "mode" or "mode:user" or "mode:user:group" (e.g. "0660:subhash:www-data";
+	// user/group may be names or numeric ids, and may be left empty to keep
+	// the current one, e.g. "0660::www-data"). Empty = umask default.
+	SocketPerm string `yaml:"socket-perm"`
 
 	// Command run for each terminal session, as a single shell-style line
 	// (e.g. "/usr/bin/tmux new -A -s main"). Quote arguments that contain
@@ -334,6 +341,10 @@ func (c *Config) Validate() error {
 	if c.URLArg && c.URLEnv {
 		return fmt.Errorf("url-arg and url-env are mutually exclusive")
 	}
+	// Fail fast on a bad socket-perm (bad mode, unknown user/group).
+	if _, err := c.ParseSocketPerm(); err != nil {
+		return err
+	}
 	// Tab title precedence: a fixed name beats PS1, which beats psname/cwd.
 	if c.TabTitle != "" {
 		c.TabShowPS1 = false
@@ -396,6 +407,52 @@ func splitCommand(s string) ([]string, error) {
 		argv = append(argv, string(cur))
 	}
 	return argv, nil
+}
+
+// SocketPermSpec is the parsed socket-perm option.
+type SocketPermSpec struct {
+	Mode os.FileMode
+	// UID/GID to chown the socket to; -1 leaves the respective id unchanged.
+	UID, GID int
+}
+
+// ParseSocketPerm parses "mode[:user[:group]]". Returns nil when unset.
+func (c *Config) ParseSocketPerm() (*SocketPermSpec, error) {
+	if c.SocketPerm == "" {
+		return nil, nil
+	}
+	parts := strings.Split(c.SocketPerm, ":")
+	if len(parts) > 3 {
+		return nil, fmt.Errorf("socket-perm: want mode[:user[:group]], got %q", c.SocketPerm)
+	}
+	mode, err := strconv.ParseUint(parts[0], 8, 32)
+	if err != nil || mode > 0o777 {
+		return nil, fmt.Errorf("socket-perm: %q is not an octal mode <= 0777", parts[0])
+	}
+	spec := &SocketPermSpec{Mode: os.FileMode(mode), UID: -1, GID: -1}
+	if len(parts) > 1 && parts[1] != "" {
+		if id, err := strconv.Atoi(parts[1]); err == nil {
+			spec.UID = id
+		} else {
+			u, err := user.Lookup(parts[1])
+			if err != nil {
+				return nil, fmt.Errorf("socket-perm: user %q: %w", parts[1], err)
+			}
+			spec.UID, _ = strconv.Atoi(u.Uid)
+		}
+	}
+	if len(parts) > 2 && parts[2] != "" {
+		if id, err := strconv.Atoi(parts[2]); err == nil {
+			spec.GID = id
+		} else {
+			g, err := user.LookupGroup(parts[2])
+			if err != nil {
+				return nil, fmt.Errorf("socket-perm: group %q: %w", parts[2], err)
+			}
+			spec.GID, _ = strconv.Atoi(g.Gid)
+		}
+	}
+	return spec, nil
 }
 
 // TLSEnabled reports whether TLS files are configured.

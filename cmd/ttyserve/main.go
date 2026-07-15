@@ -33,10 +33,11 @@ func main() {
 	// flags the user actually set override the config file.
 	command := flag.StringP("command", "c", def.Command, "shell-style command line run for each terminal including args")
 	workingDir := flag.StringP("working-dir", "w", def.WorkingDir, "working directory for terminal command (default: server's cwd)")
-	env := flag.StringP("env", "e", strings.Join(def.Env, ","), "extra environment variables for terminal command, comma-separated KEY=VALUE pairs. Also supports HTTP header value substitution as ${header.KEY}")
-	cfgPath := flag.StringP("config", "C", "", "path to YAML config file")
-	listen := flag.StringP("listen", "l", def.Listen, "IP address, interface name, or unix://<path> socket to listen on (default: all interfaces)")
-	port := flag.IntP("port", "p", def.Port, "TCP port to listen on")
+	env := flag.StringP("env", "e", strings.Join(def.Env, ","), "extra environment variables for terminal command, comma-separated `KEY=VALUE` pairs. Also supports HTTP header value substitution as ${header.KEY}")
+	cfgPath := flag.StringP("config", "C", "", "path to YAML config `file`")
+	listen := flag.StringP("listen", "l", def.Listen, "IP `address`, interface name, or unix://<path> socket to listen on (default: all interfaces)")
+	port := flag.IntP("port", "p", def.Port, "TCP `port` to listen on")
+	socketPerm := flag.String("socket-perm", def.SocketPerm, "unix socket permissions: `mode[:user[:group]]`, e.g. 660 or 0660::www-data")
 	multiSession := flag.BoolP("multi-session", "M", def.MultiSession, "enable multiple sessions (tabs) per client")
 	maxSessions := flag.Int("max-sessions-per-client", def.MaxSessionsPerClient, "cap on tabs per client (0 = unlimited)")
 	closeOnExit := flag.Bool("close-on-exit", def.CloseOnExit, "remove a session/tab when its command exits")
@@ -44,28 +45,28 @@ func main() {
 	sessionPersistence := flag.BoolP("session-persistence", "P", def.SessionPersistence, "keep sessions alive across disconnects")
 	persistenceMode := flag.String("persistence-mode", string(def.PersistenceMode), "how sessions are tied to a client: 'short_term', 'user' or 'proxy_header'")
 	idleTimeout := flag.Duration("idle-timeout", def.IdleTimeout, "for 'short_term' mode: reap sessions with no connection for this long")
-	users := flag.StringP("users", "u", "", "HTTP basic-auth users for 'user' mode, comma-separated name:password pairs, each user gets their own session. When session-persistence=false, this is a plain access gate (login required, sessions stay ephemeral)")
+	users := flag.StringP("users", "u", "", "HTTP basic-auth users for 'user' mode, comma-separated `name:password` pairs, each user gets their own session. When session-persistence=false, this is a plain access gate (login required, sessions stay ephemeral)")
 	authRealm := flag.String("auth-realm", def.AuthRealm, "HTTP basic-auth realm")
-	proxyHeaderName := flag.String("proxy-header-name", def.ProxyHeaderName, "header key carrying the user identity for 'proxy_header' persistance mode, each user ID gets their own session")
+	proxyHeaderName := flag.String("proxy-header-name", def.ProxyHeaderName, "header `key` carrying the user identity for 'proxy_header' persistance mode, each user ID gets their own session")
+	scrollback := flag.Int("scrollback-bytes", def.ScrollbackBytes, "server-side replay buffer per persistent session")
+	maxClients := flag.Int("max-clients-per-session", def.MaxClientsPerSession, "concurrent viewers per session (0 = unlimited)")
 	cookieName := flag.String("cookie-name", def.CookieName, "short_term session cookie name")
 	cookieSecure := flag.Bool("cookie-secure", def.CookieSecure, "mark the session cookie Secure (HTTPS only)")
-	allowOrigins := flag.String("allow-origins", strings.Join(def.AllowOrigins, ","), "extra websocket Origins allowed, comma-separated ('*' = any)")
-	tlsCert := flag.String("tls-cert-file", def.TLSCertFile, "TLS certificate file (enables HTTPS)")
-	tlsKey := flag.String("tls-key-file", def.TLSKeyFile, "TLS key file")
+	allowOrigins := flag.String("allow-origins", strings.Join(def.AllowOrigins, ","), "extra websocket `Origins` allowed, comma-separated ('*' = any)")
+	tlsCert := flag.String("tls-cert-file", def.TLSCertFile, "TLS certificate `file` (enables HTTPS)")
+	tlsKey := flag.String("tls-key-file", def.TLSKeyFile, "TLS key `file`")
 	readonly := flag.BoolP("readonly", "r", def.Readonly, "read-only terminals: no client input accepted")
-	maxClients := flag.Int("max-clients-per-session", def.MaxClientsPerSession, "concurrent viewers per session (0 = unlimited)")
 	urlArg := flag.Bool("url-arg", def.URLArg, "append URL query parameters to the command arguments (see security notes)")
 	urlEnv := flag.Bool("url-env", def.URLEnv, "turn URL query parameters into extra environment variables (see security notes)")
 	pingInterval := flag.Duration("ping-interval", def.PingInterval, "websocket keepalive ping period")
-	scrollback := flag.Int("scrollback-bytes", def.ScrollbackBytes, "server-side replay buffer per session")
 	fontSize := flag.IntP("font-size", "F", def.FontSize, "terminal font size in px")
 	domRenderer := flag.Bool("dom-renderer", def.DOMRenderer, "use the DOM text renderer instead of canvas (for mobile GPU issues)")
 	enableGraphics := flag.Bool("enable-graphics", def.EnableGraphics, "inline graphics in the terminal (sixel + iTerm2 image protocol)")
 	disableHyperlink := flag.Bool("disable-hyperlink", def.DisableHyperlink, "turn off clickable links in the terminal")
 	middleclickPaste := flag.Bool("middleclick-paste", def.MiddleclickPaste, "paste clipboard on middle click")
 	title := flag.StringP("title", "t", def.Title, "browser page title")
-	favicon := flag.String("favicon", def.Favicon, "custom favicon: file path or data: URI (default: built-in icon)")
-	tabBarPosition := flag.String("tab-bar-position", def.TabBarPosition, "tab bar position: 'top' or 'right'")
+	favicon := flag.String("favicon", def.Favicon, "custom favicon: `file` path or data: URI (default: built-in icon)")
+	tabBarPosition := flag.String("tab-bar-position", def.TabBarPosition, "tab bar `position`: 'top' or 'right'")
 	tabShowPsname := flag.Bool("tab-show-psname", def.TabShowPsname, "include the foreground process name in auto tab titles")
 	tabShowCwd := flag.Bool("tab-show-cwd", def.TabShowCwd, "include the working directory basename in auto tab titles")
 	tabShowPS1 := flag.Bool("tab-show-ps1", def.TabShowPS1, "title tabs from the shell's OSC 0/2 window title (overrides tab-show-psname/cwd)")
@@ -115,6 +116,8 @@ func main() {
 			cfg.Listen = *listen
 		case "port":
 			cfg.Port = *port
+		case "socket-perm":
+			cfg.SocketPerm = *socketPerm
 		case "command":
 			cfg.Command = *command
 		case "working-dir":
@@ -230,6 +233,20 @@ func main() {
 		ln, err := net.Listen(sp.Network, sp.Address)
 		if err != nil {
 			log.Fatalf("listen %s: %v", sp.Address, err)
+		}
+		// Apply socket-perm (already validated) before serving, so no
+		// connection is ever accepted under the wrong permissions.
+		if sp.Network == "unix" {
+			if perm, _ := cfg.ParseSocketPerm(); perm != nil {
+				if perm.UID != -1 || perm.GID != -1 {
+					if err := os.Chown(sp.Address, perm.UID, perm.GID); err != nil {
+						log.Fatalf("socket-perm: chown %s: %v", sp.Address, err)
+					}
+				}
+				if err := os.Chmod(sp.Address, perm.Mode); err != nil {
+					log.Fatalf("socket-perm: chmod %s: %v", sp.Address, err)
+				}
+			}
 		}
 		// Mirror the user's listen syntax: unix://<path> for sockets (with
 		// an explicit tls= field), http(s)://host:port for TCP.

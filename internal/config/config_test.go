@@ -97,6 +97,52 @@ func TestValidateOptionInteractions(t *testing.T) {
 	}
 }
 
+func TestParseSocketPerm(t *testing.T) {
+	cases := []struct {
+		in       string
+		mode     uint32
+		uid, gid int
+		wantErr  bool
+	}{
+		{"", 0, 0, 0, false}, // unset -> nil spec
+		{"0660", 0o660, -1, -1, false},
+		{"660", 0o660, -1, -1, false},
+		{"0600:0", 0o600, 0, -1, false},
+		{"0660:0:0", 0o660, 0, 0, false},
+		{"0660::0", 0o660, -1, 0, false},
+		{"0999", 0, 0, 0, true},
+		{"abc", 0, 0, 0, true},
+		{"0660:nonexistent-user-xyz", 0, 0, 0, true},
+		{"0660:0:nonexistent-group-xyz", 0, 0, 0, true},
+		{"0660:0:0:extra", 0, 0, 0, true},
+	}
+	for _, c := range cases {
+		cfg := Default()
+		cfg.SocketPerm = c.in
+		spec, err := cfg.ParseSocketPerm()
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("ParseSocketPerm(%q): expected error", c.in)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseSocketPerm(%q): %v", c.in, err)
+			continue
+		}
+		if c.in == "" {
+			if spec != nil {
+				t.Errorf("ParseSocketPerm(\"\"): want nil spec")
+			}
+			continue
+		}
+		if uint32(spec.Mode) != c.mode || spec.UID != c.uid || spec.GID != c.gid {
+			t.Errorf("ParseSocketPerm(%q) = mode %o uid %d gid %d, want %o %d %d",
+				c.in, spec.Mode, spec.UID, spec.GID, c.mode, c.uid, c.gid)
+		}
+	}
+}
+
 func TestValidateTabTitlePrecedence(t *testing.T) {
 	cfg := Default()
 	cfg.TabShowPS1 = true
