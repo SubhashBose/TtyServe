@@ -1,6 +1,8 @@
 # TtyServe configuration. All fields are optional; the values shown here are
 # the defaults unless a comment says otherwise. Every option can also be set
-# as a CLI flag of the same name (see ttyserve -help), which overrides this file.
+# as a CLI flag of the same name (see ttyserve --help), which overrides this file.
+# Note: long flags need double dashes (--port 8080); single-dash is reserved
+# for short flags (-p 8080).
 
 # Address to listen on: an IP address ("127.0.0.1", "::1"), an interface
 # name ("eth0"), or a unix socket ("unix:///run/ttyserve.sock").
@@ -42,7 +44,10 @@ persistence-mode: "short_term"  # (default: short_term)
 proxy-header-name: "X-Forwarded-User"  # (default: X-Forwarded-User)
 
 # --- User auth (persistence-mode: user) ---
-users:                       # (default: none; required for 'user' mode)
+# Required for 'user' mode. Also honored with session-persistence: false,
+# where they act as a plain access gate (login required, sessions stay
+# ephemeral). (default: none)
+users:
   - name: "admin"
     password: "changeme"
   # - name: "alice"

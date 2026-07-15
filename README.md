@@ -1,6 +1,6 @@
 # TtyServe
 
-A persistent, multi-session web terminal in Go — like [ttyd](https://github.com/tsl0922/ttyd),
+A persistent, multi-session web terminal server in Go — like [ttyd](https://github.com/tsl0922/ttyd),
 but sessions survive disconnects and each client can hold multiple terminals in a
 renameable tab bar.
 
@@ -9,16 +9,18 @@ renameable tab bar.
 - **Persistent sessions** — disconnect and reconnect; your shells keep running.
   Server-side scrollback is replayed so the screen repaints on reconnect.
 - **Three persistence modes** (configurable):
-  - `user` — sessions tied to an HTTP basic-auth user. Users/passwords are in the
-    config. Sessions live until the shell exits or the server stops.
   - `short_term` — no login required. A session is bound to a secure, signed,
     HttpOnly cookie and reaped after `idle-timeout` of no active connection — so a
     brief network blip won't lose your work, but abandoned sessions get cleaned up.
+  - `user` — sessions tied to an HTTP basic-auth user. Users/passwords are in the
+    config. Sessions live until the shell exits or the server stops.
   - `proxy_header` — sessions tied to the value of a header set by an
     authenticating reverse proxy (`proxy-header-name`, default
     `X-Forwarded-User`); like `user` mode but the proxy does the auth. Bind to
     `unix://` or `127.0.0.1` so the header can't be spoofed directly.
-- **Multiple sessions + tabs** (toggleable). Tab bar on **top** or **right**
+  `user` and `proxy_header` persistence modes survives different browser logins as well. 
+  Users with same login credentials will find terminal sessions persistent across browsers.
+ - **Multiple sessions + tabs** (toggleable). Tab bar on **top** or **right**
   (configurable). **Rename** a tab by double-clicking its title. Add/close tabs.
 - **Single-session mode** — flip `multi-session: false` for one terminal, no tabs.
 - **Persistence off** — set `session-persistence: false` for ttyd-style ephemeral
@@ -68,11 +70,13 @@ reconnect.
 ## Run
 
 ```sh
-./ttyserve -config config.example.yaml
+./ttyserve --config config.example.yaml
 # or override options on the command line:
-./ttyserve -config config.example.yaml -listen 127.0.0.1 -port 8080
+./ttyserve --config config.example.yaml --listen 127.0.0.1 --port 8080
 # config file is optional; flags alone work too:
-./ttyserve -port 8080 -close-on-exit=false
+./ttyserve --port 8080 --close-on-exit=false
+# common options have short forms (-c command, -p port, -l listen, ...):
+./ttyserve -p 8080 -c "/usr/bin/tmux new -A -s main"
 
 ./ttyserve --version   # print version (and build date) and exit
 ./ttyserve --upgrade   # download and install the latest release, then exit
@@ -83,34 +87,34 @@ Open http://localhost:7681.
 ## Configuration
 
 Every option is available both in the YAML config and as a CLI flag of the
-same name; flags override the file. `ttyserve -help` lists them all with
+same name; flags override the file. `ttyserve --help` lists them all with
 defaults. See `config.example.yaml` for the annotated file. Key options:
 
 | Option | Meaning |
 |---|---|
 | `listen` | IP address, interface name, or `unix://<path>` socket (default: all interfaces) |
 | `port` | TCP port (default 7681; ignored for unix sockets) |
-| `session-persistence` | master on/off for persistence |
-| `persistence-mode` | `user`, `short_term` or `proxy_header` |
-| `proxy-header-name` | header carrying the identity in `proxy_header` mode (default `X-Forwarded-User`) |
-| `multi-session` | enable tabs / multiple terminals |
-| `tab-bar-position` | `top` or `right` |
-| `users` | list of comma-separated `name:password` pairs for `user` mode |
-| `idle-timeout` | short-term session lifetime when disconnected |
 | `command` / `env` / `working-dir` | what each terminal runs; `command` is a full shell-style line, e.g. `"/usr/bin/tmux new -A -s main"`. `env` entries may contain `${header.NAME}`, expanded from the request header at spawn time (e.g. `USER=${header.X-Forwarded-User}`) |
+| `session-persistence` | master on/off for persistence (default: true)|
+| `persistence-mode` | `user`, `short_term` or `proxy_header` (default: `short_term`) |
+| `proxy-header-name` | header carrying the identity in `proxy_header` mode (default `X-Forwarded-User`) |
+| `users` | list of comma-separated `name:password` pairs for `user` mode; with persistence off they act as a plain access gate |
+| `idle-timeout` | short-term session lifetime when disconnected (default: 5m) |
+| `multi-session` | enable tabs / multiple terminals (default: true) |
+| `tab-bar-position` | `top` or `right` |
 | `readonly` | `true` = read-only terminals, no client input |
 | `url-arg` / `url-env` | URL query params become command args / env vars (mutually exclusive; security-sensitive) |
 | `max-clients-per-session` | shared-viewer cap (0 = unlimited) |
-| `scrollback-bytes` | server-side replay buffer per session |
+| `scrollback-bytes` | server-side replay buffer per session (default: 262144) |
 | `font-size` | terminal font size in px (default 14) |
 | `enable-graphics` | inline images via sixel + iTerm2 protocol (default true) |
-| `dom-renderer` | DOM text rendering instead of canvas — fixes Android GPU blanking after images (default false) |
+| `dom-renderer` | DOM text rendering instead of canvas — use incase of any GPU blanking issue (default false) |
 | `disable-hyperlink` | `true` = links in output are not clickable (default false) |
 | `middleclick-paste` | paste clipboard on middle click (default true) |
 | `tab-show-psname` / `tab-show-cwd` | auto tab title parts: process name / dir (default true) |
 | `tab-show-ps1` | title tabs from the shell's window title (default false) |
 | `tab-title` | fixed tab title, disables auto-titling |
-| `favicon` | custom icon: file path or `data:` URI (default: built-in) |
+| `favicon` | custom icon: file path or base64 encoded `data:` URI (default: built-in) |
 | `tls-cert-file` / `tls-key-file` | enable TLS (applies to TCP and unix-socket listeners alike) |
 | `allow-origins` | extra websocket origins beyond same-host; `["*"]` = any |
 
@@ -141,7 +145,8 @@ websocket at `/ws?session=<id>` bridges that PTY to xterm.js in the browser.
   When all websockets for a client detach, an idle timer starts; after
   `idle-timeout` the client and all its sessions are killed by the reaper.
 - **persistence off**: each page load is a fresh ephemeral identity; closing the
-  socket discards the session.
+  socket discards the session. If `users` are configured, they gate access
+  (HTTP basic-auth) without changing these semantics.
 
 ### Tab titles
 

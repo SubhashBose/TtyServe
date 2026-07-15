@@ -65,6 +65,14 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 	// requests resolve to the same client. No cookie, no cross-page sharing:
 	// a reload gets a fresh identity, and the session dies with the socket.
 	if !a.cfg.SessionPersistence {
+		// Configured users act as a plain basic-auth gate even in ephemeral
+		// mode: they control access only — identity/session semantics stay
+		// fully ephemeral (per-page, dies with the socket).
+		if len(a.users) > 0 {
+			if !a.basicAuthOK(r) {
+				return Identity{}, ErrUnauthorized
+			}
+		}
 		eid := r.URL.Query().Get("eid")
 		// Cap hostile/garbage tokens: an over-long eid gets a fresh identity
 		// instead of stuffing an arbitrarily large key into the client map.
@@ -76,14 +84,8 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 
 	switch a.cfg.PersistenceMode {
 	case config.PersistByUser:
-		user, pass, ok := r.BasicAuth()
-		if !ok {
-			return Identity{}, ErrUnauthorized
-		}
-		want, exists := a.users[user]
-		// Constant-time comparison to avoid leaking via timing.
-		userOK := exists && subtle.ConstantTimeCompare([]byte(pass), []byte(want)) == 1
-		if !userOK {
+		user, _, _ := r.BasicAuth()
+		if !a.basicAuthOK(r) {
 			return Identity{}, ErrUnauthorized
 		}
 		return Identity{Key: "user:" + user}, nil
@@ -155,6 +157,17 @@ func (a *Authenticator) buildCookie(value string) *http.Cookie {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(life / time.Second),
 	}
+}
+
+// basicAuthOK validates the request's basic-auth credentials against the
+// configured users, in constant time.
+func (a *Authenticator) basicAuthOK(r *http.Request) bool {
+	user, pass, ok := r.BasicAuth()
+	if !ok {
+		return false
+	}
+	want, exists := a.users[user]
+	return exists && subtle.ConstantTimeCompare([]byte(pass), []byte(want)) == 1
 }
 
 // WriteUnauthorized emits a 401 with a basic-auth challenge.

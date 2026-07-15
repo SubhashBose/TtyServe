@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
+	//"flag"
 	"fmt"
 	"log"
 	"net"
@@ -19,6 +19,7 @@ import (
 	"ttyserve/internal/session"
 
 	"github.com/SubhashBose/GoPkg-selfupdater"
+	flag "github.com/spf13/pflag"
 )
 
 var version = "0.2"
@@ -30,47 +31,47 @@ func main() {
 	// Every config option has a CLI flag with the same name as its YAML key.
 	// Flag defaults mirror config defaults so `-help` documents them; only
 	// flags the user actually set override the config file.
-	cfgPath := flag.String("config", "", "path to YAML config file")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	doUpgrade := flag.Bool("upgrade", false, "self-upgrade the binary to the latest release and exit")
-	listen := flag.String("listen", def.Listen, "IP address, interface name, or unix://<path> socket to listen on (default: all interfaces)")
-	port := flag.Int("port", def.Port, "TCP port to listen on")
-	command := flag.String("command", def.Command, "shell-style command line run for each terminal")
-	workingDir := flag.String("working-dir", def.WorkingDir, "working directory for terminals (default: server's cwd)")
-	env := flag.String("env", strings.Join(def.Env, ","), "extra environment variables, comma-separated KEY=VALUE pairs")
-	sessionPersistence := flag.Bool("session-persistence", def.SessionPersistence, "keep sessions alive across disconnects")
-	persistenceMode := flag.String("persistence-mode", string(def.PersistenceMode), "how sessions are tied to a client: 'user', 'short_term' or 'proxy_header'")
-	multiSession := flag.Bool("multi-session", def.MultiSession, "enable multiple sessions (tabs) per client")
+	command := flag.StringP("command", "c", def.Command, "shell-style command line run for each terminal including args")
+	workingDir := flag.StringP("working-dir", "w", def.WorkingDir, "working directory for terminal command (default: server's cwd)")
+	env := flag.StringP("env", "e", strings.Join(def.Env, ","), "extra environment variables for terminal command, comma-separated KEY=VALUE pairs. Also supports HTTP header value substitution as ${header.KEY}")
+	cfgPath := flag.StringP("config", "C", "", "path to YAML config file")
+	listen := flag.StringP("listen", "l", def.Listen, "IP address, interface name, or unix://<path> socket to listen on (default: all interfaces)")
+	port := flag.IntP("port", "p", def.Port, "TCP port to listen on")
+	multiSession := flag.BoolP("multi-session", "M", def.MultiSession, "enable multiple sessions (tabs) per client")
 	maxSessions := flag.Int("max-sessions-per-client", def.MaxSessionsPerClient, "cap on tabs per client (0 = unlimited)")
-	tabBarPosition := flag.String("tab-bar-position", def.TabBarPosition, "tab bar position: 'top' or 'right'")
-	users := flag.String("users", "", "basic-auth users for 'user' mode, comma-separated name:password pairs")
+	closeOnExit := flag.Bool("close-on-exit", def.CloseOnExit, "remove a session/tab when its command exits")
+	autoRespawn := flag.Bool("auto-respawn", def.AutoRespawn, "start a new session immediately when the last one ends")
+	sessionPersistence := flag.BoolP("session-persistence", "P", def.SessionPersistence, "keep sessions alive across disconnects")
+	persistenceMode := flag.String("persistence-mode", string(def.PersistenceMode), "how sessions are tied to a client: 'short_term', 'user' or 'proxy_header'")
+	idleTimeout := flag.Duration("idle-timeout", def.IdleTimeout, "for 'short_term' mode: reap sessions with no connection for this long")
+	users := flag.StringP("users", "u", "", "HTTP basic-auth users for 'user' mode, comma-separated name:password pairs, each user gets their own session. When session-persistence=false, this is a plain access gate (login required, sessions stay ephemeral)")
 	authRealm := flag.String("auth-realm", def.AuthRealm, "HTTP basic-auth realm")
-	proxyHeaderName := flag.String("proxy-header-name", def.ProxyHeaderName, "proxy_header mode: header carrying the user identity")
-	idleTimeout := flag.Duration("idle-timeout", def.IdleTimeout, "short_term: reap sessions with no connection for this long")
+	proxyHeaderName := flag.String("proxy-header-name", def.ProxyHeaderName, "header key carrying the user identity for 'proxy_header' persistance mode, each user ID gets their own session")
 	cookieName := flag.String("cookie-name", def.CookieName, "short_term session cookie name")
 	cookieSecure := flag.Bool("cookie-secure", def.CookieSecure, "mark the session cookie Secure (HTTPS only)")
 	allowOrigins := flag.String("allow-origins", strings.Join(def.AllowOrigins, ","), "extra websocket Origins allowed, comma-separated ('*' = any)")
 	tlsCert := flag.String("tls-cert-file", def.TLSCertFile, "TLS certificate file (enables HTTPS)")
 	tlsKey := flag.String("tls-key-file", def.TLSKeyFile, "TLS key file")
-	readonly := flag.Bool("readonly", def.Readonly, "read-only terminals: no client input accepted")
+	readonly := flag.BoolP("readonly", "r", def.Readonly, "read-only terminals: no client input accepted")
+	maxClients := flag.Int("max-clients-per-session", def.MaxClientsPerSession, "concurrent viewers per session (0 = unlimited)")
 	urlArg := flag.Bool("url-arg", def.URLArg, "append URL query parameters to the command arguments (see security notes)")
 	urlEnv := flag.Bool("url-env", def.URLEnv, "turn URL query parameters into extra environment variables (see security notes)")
-	maxClients := flag.Int("max-clients-per-session", def.MaxClientsPerSession, "concurrent viewers per session (0 = unlimited)")
 	pingInterval := flag.Duration("ping-interval", def.PingInterval, "websocket keepalive ping period")
 	scrollback := flag.Int("scrollback-bytes", def.ScrollbackBytes, "server-side replay buffer per session")
-	fontSize := flag.Int("font-size", def.FontSize, "terminal font size in px")
+	fontSize := flag.IntP("font-size", "F", def.FontSize, "terminal font size in px")
 	domRenderer := flag.Bool("dom-renderer", def.DOMRenderer, "use the DOM text renderer instead of canvas (for mobile GPU issues)")
 	enableGraphics := flag.Bool("enable-graphics", def.EnableGraphics, "inline graphics in the terminal (sixel + iTerm2 image protocol)")
 	disableHyperlink := flag.Bool("disable-hyperlink", def.DisableHyperlink, "turn off clickable links in the terminal")
 	middleclickPaste := flag.Bool("middleclick-paste", def.MiddleclickPaste, "paste clipboard on middle click")
-	title := flag.String("title", def.Title, "browser page title")
+	title := flag.StringP("title", "t", def.Title, "browser page title")
 	favicon := flag.String("favicon", def.Favicon, "custom favicon: file path or data: URI (default: built-in icon)")
-	closeOnExit := flag.Bool("close-on-exit", def.CloseOnExit, "remove a session when its command exits")
-	autoRespawn := flag.Bool("auto-respawn", def.AutoRespawn, "start a new session immediately when the last one ends")
+	tabBarPosition := flag.String("tab-bar-position", def.TabBarPosition, "tab bar position: 'top' or 'right'")
 	tabShowPsname := flag.Bool("tab-show-psname", def.TabShowPsname, "include the foreground process name in auto tab titles")
 	tabShowCwd := flag.Bool("tab-show-cwd", def.TabShowCwd, "include the working directory basename in auto tab titles")
 	tabShowPS1 := flag.Bool("tab-show-ps1", def.TabShowPS1, "title tabs from the shell's OSC 0/2 window title (overrides tab-show-psname/cwd)")
 	tabTitle := flag.String("tab-title", def.TabTitle, "fixed tab title, overrides all auto-titling")
+	showVersion := flag.BoolP("version", "v", false, "print version and exit")
+	doUpgrade := flag.Bool("upgrade", false, "self-upgrade the binary to the latest release and exit")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "TtyServe v%s - Serve Terminal on the web\n\n", version)
@@ -78,12 +79,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  %s --command \"<program> [args...]\" [options]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  or\n")
 		fmt.Fprintf(os.Stderr, "  %s --config config.yaml\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Can be configured through CLI options, or YAML config file, or combined.\n\n")
+		fmt.Fprintf(os.Stderr, "Can be configured through CLI options, or YAML config file, or combined. Config file keys names are same as CLI options.\n")
+		fmt.Fprintf(os.Stderr, "To turn off a flag which defaults to true, set it false like --close-on-exit=false\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\n\nFull documentation: https://github.com/SubhashBose/TtyServe\n")
 	}
 
+	flag.CommandLine.SortFlags = false
 	flag.Parse()
 
 	// --version and --upgrade short-circuit before any config/server work.
