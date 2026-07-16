@@ -102,6 +102,10 @@ close-on-exit: true          # remove session when its command exits (default: t
 auto-respawn: false          # start a new session immediately when the last one
                              # ends (default: false = empty tab bar, or restart
                              # on Enter in single-session mode)
+allow-sharing: true          # let a user share a terminal tab with another
+                             # authenticated user via a link — right-click a tab
+                             # (default: false). Persistent modes only. View-only
+                             # or full-control; owner can revoke anytime.
 
 # --- Tab titles ---
 # Auto titles are "<process> <dir>", e.g. "vim myproject".

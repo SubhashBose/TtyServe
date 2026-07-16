@@ -1,6 +1,8 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,7 +17,21 @@ import (
 var (
 	ErrTooManySessions = errors.New("session limit reached")
 	ErrNotFound        = errors.New("session not found")
+	ErrSharingDisabled = errors.New("session sharing is disabled")
+	ErrNotOwner        = errors.New("only the session owner can do that")
+	ErrShareInvalid    = errors.New("share link is invalid or has expired")
+	ErrReadOnly        = errors.New("read-only access")
 )
+
+// shareGrant is a live share invitation: a token that lets another
+// authenticated client attach to sessionID owned by owner.
+type shareGrant struct {
+	owner     string
+	sessionID string
+	readOnly  bool
+	expires   time.Time // zero = never
+	singleUse bool      // consumed on first successful accept
+}
 
 // Manager owns all clients and their sessions.
 type Manager struct {
@@ -29,6 +45,9 @@ type Manager struct {
 
 	mu      sync.Mutex
 	clients map[string]*Client
+
+	sharesMu sync.Mutex
+	shares   map[string]*shareGrant // token -> grant
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -57,6 +76,7 @@ func NewManager(cfg config.Config) *Manager {
 		defPs:    defPs,
 		defDir:   defDir,
 		clients:  make(map[string]*Client),
+		shares:   make(map[string]*shareGrant),
 		stop:     make(chan struct{}),
 	}
 	// The reaper collects idle clients in short_term mode — and in ephemeral
@@ -126,6 +146,7 @@ func (m *Manager) CreateSession(c *Client, title string, extraArgs, extraEnv []s
 		userTitled: userTitled,
 		extraArgs:  extraArgs,
 		extraEnv:   extraEnv,
+		owner:      c.ID,
 	}
 	if title == "" {
 		// Auto-titled: start with the expected components right away.
@@ -167,6 +188,10 @@ func (m *Manager) RestartSession(c *Client, id string) (*Session, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
+	// A read-only shared viewer must not cause side effects (respawn).
+	if c.AccessReadOnly(id) {
+		return nil, ErrReadOnly
+	}
 	restarted, err := s.restartIfExited(func() (*terminal.Terminal, error) {
 		return m.spawnTerminal(s.extraArgs, s.extraEnv)
 	})
@@ -190,6 +215,148 @@ func (m *Manager) CloseSession(c *Client, id string) error {
 	}
 	c.remove(id)
 	return nil
+}
+
+// sharingEnabled reports whether tab sharing is usable: opted in and with
+// persistent sessions (an ephemeral session dies with its socket).
+func (m *Manager) sharingEnabled() bool {
+	return m.cfg.AllowSharing && m.cfg.SessionPersistence
+}
+
+// Share mints a share token for a session the client owns. ttl <= 0 means
+// the invitation never expires; singleUse consumes it on first accept.
+// Returns the opaque token; the caller builds the user-facing link from it.
+func (m *Manager) Share(c *Client, sessionID string, readOnly bool, ttl time.Duration, singleUse bool) (string, error) {
+	if !m.sharingEnabled() {
+		return "", ErrSharingDisabled
+	}
+	s, ok := c.Get(sessionID)
+	if !ok {
+		return "", ErrNotFound
+	}
+	// Only the owner may share — a shared-in viewer cannot re-share.
+	if s.ownerID() != c.ID {
+		return "", ErrNotOwner
+	}
+	token := shareToken()
+	g := &shareGrant{owner: c.ID, sessionID: sessionID, readOnly: readOnly, singleUse: singleUse}
+	if ttl > 0 {
+		g.expires = time.Now().Add(ttl)
+	}
+	m.sharesMu.Lock()
+	m.pruneSharesLocked()
+	m.shares[token] = g
+	m.sharesMu.Unlock()
+	return token, nil
+}
+
+// AcceptShare grafts a shared session into the accepting client's tab list.
+// The caller must already have authenticated the client.
+func (m *Manager) AcceptShare(c *Client, token string) (*Session, error) {
+	if !m.sharingEnabled() {
+		return nil, ErrShareInvalid
+	}
+	m.sharesMu.Lock()
+	g, ok := m.shares[token]
+	if ok && !g.expires.IsZero() && time.Now().After(g.expires) {
+		delete(m.shares, token)
+		ok = false
+	}
+	m.sharesMu.Unlock()
+	if !ok {
+		return nil, ErrShareInvalid
+	}
+	owner, ok := m.GetClient(g.owner)
+	if !ok {
+		return nil, ErrShareInvalid
+	}
+	s, ok := owner.Get(g.sessionID)
+	if !ok {
+		return nil, ErrShareInvalid // owner closed it since
+	}
+	// Accepting your own share is a harmless no-op.
+	if c.ID == g.owner {
+		return s, nil
+	}
+	// Enforce the accepter's tab cap — unless they already hold this share
+	// (re-accept after reload just refreshes the read-only bit).
+	if _, already := c.Get(g.sessionID); !already {
+		if m.cfg.MaxSessionsPerClient > 0 && c.Count() >= m.cfg.MaxSessionsPerClient {
+			return nil, ErrTooManySessions
+		}
+	}
+	c.addShared(s, g.readOnly)
+	s.addSharerClient(c)
+	// A single-use link is spent on first successful accept. The granted
+	// access lives on as a reference in the accepter's client.
+	if g.singleUse {
+		m.sharesMu.Lock()
+		delete(m.shares, token)
+		m.sharesMu.Unlock()
+	}
+	return s, nil
+}
+
+// RevokeShare invalidates all share links for a session the client owns and
+// evicts every current sharer (durable reference removed, live connection
+// closed). The terminal itself keeps running for the owner.
+func (m *Manager) RevokeShare(c *Client, sessionID string) error {
+	s, ok := c.Get(sessionID)
+	if !ok {
+		return ErrNotFound
+	}
+	if s.ownerID() != c.ID {
+		return ErrNotOwner
+	}
+	m.sharesMu.Lock()
+	for tok, g := range m.shares {
+		if g.sessionID == sessionID {
+			delete(m.shares, tok)
+		}
+	}
+	m.sharesMu.Unlock()
+	for _, sh := range s.takeSharers() {
+		sh.closeConns(sessionID)
+		sh.dropShared(sessionID)
+	}
+	return nil
+}
+
+// HasActiveLinks reports whether a session currently has any unexpired share
+// link (accepted or not). Prunes expired grants as it scans, so the result
+// is always exact. Touches only sharesMu — safe to call while holding no
+// other lock.
+func (m *Manager) HasActiveLinks(sessionID string) bool {
+	m.sharesMu.Lock()
+	defer m.sharesMu.Unlock()
+	now := time.Now()
+	found := false
+	for tok, g := range m.shares {
+		if !g.expires.IsZero() && now.After(g.expires) {
+			delete(m.shares, tok)
+			continue
+		}
+		if g.sessionID == sessionID {
+			found = true
+		}
+	}
+	return found
+}
+
+// pruneSharesLocked drops expired grants. Caller holds sharesMu.
+func (m *Manager) pruneSharesLocked() {
+	now := time.Now()
+	for tok, g := range m.shares {
+		if !g.expires.IsZero() && now.After(g.expires) {
+			delete(m.shares, tok)
+		}
+	}
+}
+
+func shareToken() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 // EnsureDefaultSession guarantees a client has at least one session and returns

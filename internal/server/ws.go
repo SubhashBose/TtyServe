@@ -59,6 +59,14 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 	s.mgr.ConnAttached(cl)
 	defer s.mgr.ConnDetached(cl)
 
+	// Register this connection so a revoked share can force it closed.
+	connID := cl.RegConn(sess.ID, func() { conn.Close() })
+	defer cl.UnregConn(connID)
+
+	// Effective read-only for THIS viewer: the global flag, or a read-only
+	// share. The owner keeps write access regardless of a read-only share.
+	readOnly := s.cfg.Readonly || cl.AccessReadOnly(sess.ID)
+
 	// Enforce per-session viewer cap.
 	if s.cfg.MaxClientsPerSession > 0 && term.SubscriberCount() > s.cfg.MaxClientsPerSession {
 		conn.Close()
@@ -168,7 +176,7 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 		payload := data[1:]
 		switch op {
 		case msgInput:
-			if !s.cfg.Readonly {
+			if !readOnly {
 				_, _ = term.Write(payload)
 			}
 		case msgResize:

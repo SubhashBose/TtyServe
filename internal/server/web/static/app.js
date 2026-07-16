@@ -21,6 +21,18 @@
     try { return localStorage.getItem(LS_ACTIVE); } catch (e) { return null; }
   }
 
+  // Pinned tabs (per-browser, like the active-tab memory): a pinned tab has
+  // no close button, guarding against accidental closes.
+  const LS_PINNED = "ttyserve_pinned_tabs";
+  function loadPinned() {
+    try { return new Set(JSON.parse(localStorage.getItem(LS_PINNED) || "[]")); }
+    catch (e) { return new Set(); }
+  }
+  function savePinned(set) {
+    try { localStorage.setItem(LS_PINNED, JSON.stringify([...set])); } catch (e) {}
+  }
+  const pinnedTabs = loadPinned();
+
   // showStatus displays a transient toast; pass sticky=true to keep it
   // shown until the next status update (used for ongoing states like
   // "reconnecting").
@@ -98,13 +110,13 @@
     if (w) { w.opener = null; w.location.href = uri; }
   }
 
-  function makeTerminal() {
+  function makeTerminal(readOnly) {
     const opts = {
       cursorBlink: true,
       fontFamily: "Menlo, Consolas, monospace",
       fontSize: cfg.fontSize || 14,
       theme: { background: "#1e1e1e", foreground: "#cccccc" },
-      disableStdin: cfg.readonly,
+      disableStdin: cfg.readonly || !!readOnly,
       scrollback: 10000,
     };
     if (cfg.hyperlinks) {
@@ -380,7 +392,10 @@
   // deferConnect skips the immediate websocket dial — used at page load so
   // the active tab can connect first and the rest follow staggered.
   function createTab(info, deferConnect) {
-    const { term, fit } = makeTerminal();
+    // A read-only shared tab: input is disabled locally too (the server also
+    // drops it, but this stops keystrokes echoing hope-fully into the void).
+    const readOnly = !!info.readOnly;
+    const { term, fit } = makeTerminal(readOnly);
 
     const pane = document.createElement("div");
     pane.className = "term-pane";
@@ -406,7 +421,7 @@
       }
     }
 
-    if (!cfg.readonly) {
+    if (!cfg.readonly && !readOnly) {
       term.onData((d) => {
         // Drop the terminal's own replies to queries embedded in a
         // scrollback repaint; only real input/live replies reach the PTY.
@@ -437,7 +452,7 @@
       if (e.button === 1) e.preventDefault(); // suppress autoscroll
     });
     pane.addEventListener("auxclick", (e) => {
-      if (e.button !== 1 || cfg.readonly || !cfg.middleclickPaste) return;
+      if (e.button !== 1 || cfg.readonly || readOnly || !cfg.middleclickPaste) return;
       e.preventDefault();
       if (navigator.clipboard && navigator.clipboard.readText) {
         navigator.clipboard.readText()
@@ -452,14 +467,27 @@
     const tabEl = document.createElement("div");
     tabEl.className = "tab";
     tabEl.dataset.sid = info.id;
+    // Pin indicator, hidden unless pinned (managed by applyPin).
+    const pinEl = document.createElement("span");
+    pinEl.className = "pinicon";
+    pinEl.title = "Pinned";
+    tabEl.appendChild(pinEl);
+
     const titleEl = document.createElement("span");
     titleEl.className = "title";
     setTabTitle(titleEl, info);
-    titleEl.title = "Double-click to rename";
+    if (!info.shared) titleEl.title = "Double-click to rename";
     tabEl.appendChild(titleEl);
 
+    // Badge (informational): shared-in tab you're viewing, or an owned tab
+    // you've shared out. Kept in sync by applyShareBadge (also from polling).
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    tabEl.appendChild(badge);
+
+    let closeEl = null;
     if (cfg.multiSession) {
-      const closeEl = document.createElement("span");
+      closeEl = document.createElement("span");
       closeEl.className = "close";
       closeEl.textContent = "×";
       closeEl.title = "Close";
@@ -480,10 +508,19 @@
     }
 
     tabEl.addEventListener("click", () => activate(info.id));
-    // Double-click title to rename.
-    titleEl.addEventListener("dblclick", (e) => {
-      e.stopPropagation();
-      beginRename(info.id, titleEl);
+    // Double-click title to rename — owner only (the title is shared state).
+    if (!info.shared) {
+      titleEl.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        beginRename(info.id, titleEl);
+      });
+    }
+
+    // Right-click a tab for actions (share, rename, close). Sharing options
+    // appear only for tabs you own, when the server allows sharing.
+    tabEl.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      showTabMenu(e, info.id);
     });
 
     // Drag to rearrange tabs. The dragged tab is moved live as the cursor
@@ -523,12 +560,17 @@
     }
 
     const entry = {
-      id: info.id, term, fit, pane, tabEl, titleEl,
+      id: info.id, term, fit, pane, tabEl, titleEl, badge, pinEl, closeEl,
       ws: null, connected: false, exited: false, awaitRestart: false,
       sessionGone: false, replaying: false, stalled: false, lastSeen: 0,
       reconnectTimer: null, _backoff: 500,
       renderer: null, rendererLoaded: false,
+      shared: !!info.shared, readOnly: readOnly, sharedOut: !!info.sharedOut,
+      sharerCount: info.sharerCount || 0,
+      pinned: pinnedTabs.has(info.id),
     };
+    applyShareBadge(entry);
+    applyPin(entry);
     panes.set(info.id, entry);
     if (!deferConnect) connect(entry, info.id);
     return entry;
@@ -619,6 +661,7 @@
     if (!entry) return;
     clearTimeout(entry.reconnectTimer);
     panes.delete(id);
+    if (pinnedTabs.delete(id)) savePinned(pinnedTabs); // forget dead pins
     if (entry.ws) { try { entry.ws.close(); } catch (e) {} }
     // Dispose the renderer addon first and defensively: renderer teardown
     // combined with the image addon's setRenderer hook has thrown before,
@@ -727,6 +770,251 @@
     removeTabUI(id);
   }
 
+  // Build the shareable URL from a token, based on the page's own address so
+  // it works behind any proxy prefix exactly as the user sees it.
+  function shareURL(token) {
+    const u = new URL(location.href);
+    u.hash = "";
+    u.searchParams.set("share", token);
+    return u.href;
+  }
+
+  // Create a share link with the chosen access + expiry, returning its URL.
+  async function createShareLink(id, readOnly, ttl, singleUse) {
+    const res = await api("POST", "sessions/" + encodeURIComponent(id) + "/share",
+      { readOnly: readOnly, ttl: ttl || "", singleUse: !!singleUse });
+    const entry = panes.get(id);
+    if (entry) { entry.sharedOut = true; applyShareBadge(entry); }
+    return shareURL(res.token);
+  }
+
+  async function stopSharing(id) {
+    try { await api("DELETE", "sessions/" + encodeURIComponent(id) + "/share"); }
+    catch (e) { showStatus(e.message || "cannot stop sharing"); return; }
+    const entry = panes.get(id);
+    if (entry) { entry.sharedOut = false; entry.sharerCount = 0; applyShareBadge(entry); }
+    showStatus("sharing stopped");
+  }
+
+  // --- Share dialog --------------------------------------------------------
+  let openDialog = null;
+  function closeDialog() {
+    if (openDialog) { openDialog.remove(); openDialog = null; }
+  }
+
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  function showShareDialog(id) {
+    closeDialog();
+    const entry = panes.get(id);
+    if (!entry) return;
+
+    const overlay = el("div", "modal-overlay");
+    const box = el("div", "modal");
+    overlay.appendChild(box);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) closeDialog(); });
+
+    box.appendChild(el("h3", "modal-title", "Share this terminal"));
+    box.appendChild(el("p", "modal-sub",
+      "Anyone with the link who can sign in gets this tab in their list."));
+
+    // Access level
+    const access = el("div", "field");
+    access.appendChild(el("label", null, "Access"));
+    const accessSel = el("select");
+    accessSel.appendChild(new Option("View only", "ro"));
+    accessSel.appendChild(new Option("Allow control", "rw"));
+    access.appendChild(accessSel);
+    box.appendChild(access);
+
+    // Expiry (multi-use window)
+    const exp = el("div", "field");
+    exp.appendChild(el("label", null, "Link expires"));
+    const expSel = el("select");
+    [["", "Never"], ["1h", "1 hour"], ["8h", "8 hours"],
+     ["24h", "1 day"], ["168h", "7 days"]].forEach(([v, t]) =>
+      expSel.appendChild(new Option(t, v)));
+    exp.appendChild(expSel);
+    box.appendChild(exp);
+
+    // One-time (single-use) — independent of the expiry window.
+    const onceField = el("div", "field checkbox");
+    const onceBox = el("input"); onceBox.type = "checkbox"; onceBox.id = "share-once";
+    const onceLabel = el("label", null, "One-time — link stops working after the first person accepts");
+    onceLabel.setAttribute("for", "share-once");
+    onceField.appendChild(onceBox);
+    onceField.appendChild(onceLabel);
+    box.appendChild(onceField);
+
+    box.appendChild(el("p", "modal-hint",
+      "Expiry and one-time limit how long the link can be accepted; access already granted persists until you stop sharing."));
+
+    // Result row (hidden until a link is created)
+    const result = el("div", "field result");
+    result.style.display = "none";
+    const linkInput = el("input");
+    linkInput.readOnly = true;
+    const copyBtn = el("button", "btn", "Copy");
+    result.appendChild(linkInput);
+    result.appendChild(copyBtn);
+    box.appendChild(result);
+    copyBtn.addEventListener("click", () => {
+      copyText(linkInput.value, entry);
+      linkInput.select();
+      showStatus("share link copied");
+    });
+
+    // Actions. Stop sharing is present whenever a link/access exists (built
+    // once, shown/hidden dynamically — a fresh link reveals it immediately).
+    const actions = el("div", "modal-actions");
+    const stopBtn = el("button", "btn btn-danger", "Stop sharing");
+    stopBtn.style.display = entry.sharedOut ? "" : "none";
+    stopBtn.addEventListener("click", () => { stopSharing(id); closeDialog(); });
+    actions.appendChild(stopBtn);
+    const spacer = el("div"); spacer.style.flex = "1";
+    actions.appendChild(spacer);
+    const cancelBtn = el("button", "btn", "Close");
+    cancelBtn.addEventListener("click", closeDialog);
+    const createBtn = el("button", "btn btn-primary", "Create link");
+    createBtn.addEventListener("click", async () => {
+      createBtn.disabled = true;
+      try {
+        const url = await createShareLink(
+          id, accessSel.value === "ro", expSel.value, onceBox.checked);
+        linkInput.value = url;
+        result.style.display = "";
+        stopBtn.style.display = ""; // a link now exists -> allow stopping
+        linkInput.select();
+        copyText(url, entry);
+        showStatus("share link created & copied");
+      } catch (e) {
+        showStatus(e.message || "cannot create share link");
+      } finally {
+        createBtn.disabled = false;
+      }
+    });
+    actions.appendChild(cancelBtn);
+    actions.appendChild(createBtn);
+    box.appendChild(actions);
+
+    document.body.appendChild(overlay);
+    openDialog = overlay;
+    accessSel.focus();
+  }
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDialog(); });
+
+  // Inline stroke icons (Feather/Lucide style) — no icon font, no CDN, and
+  // they tint via currentColor so they sit naturally in the dark UI.
+  const ICON_PATHS = {
+    share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/>',
+    eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+    pin: '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16h14v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/>',
+    edit: '<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
+    close: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+    ban: '<circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>',
+  };
+  function iconSVG(name) {
+    return '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+      ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      ICON_PATHS[name] + "</svg>";
+  }
+
+  // Reflect an entry's share state in its tab badge + styling. The badge
+  // shows only once someone has actually joined (sharerCount) — a link that
+  // merely exists doesn't badge the tab (Stop-sharing still appears via the
+  // menu/dialog, driven separately by sharedOut).
+  function applyShareBadge(entry) {
+    const b = entry.badge;
+    if (!b) return;
+    if (entry.shared) {
+      b.innerHTML = iconSVG(entry.readOnly ? "eye" : "share");
+      b.title = entry.readOnly ? "Shared with you (view-only)" : "Shared with you";
+      entry.tabEl.classList.add("is-shared");
+    } else if (entry.sharerCount > 0) {
+      b.innerHTML = iconSVG("share");
+      const n = entry.sharerCount;
+      b.title = n === 1 ? "1 person has joined" : n + " people have joined";
+      entry.tabEl.classList.add("is-shared");
+    } else {
+      b.innerHTML = "";
+      b.title = "";
+      entry.tabEl.classList.remove("is-shared");
+    }
+  }
+
+  // Pinned = no close button on the tab (context menu Close is hidden too);
+  // unpin to make it closable again.
+  function applyPin(entry) {
+    if (entry.closeEl) entry.closeEl.style.display = entry.pinned ? "none" : "";
+    if (entry.pinEl) {
+      entry.pinEl.innerHTML = entry.pinned ? iconSVG("pin") : "";
+      entry.pinEl.style.display = entry.pinned ? "" : "none";
+    }
+    entry.tabEl.classList.toggle("is-pinned", entry.pinned);
+  }
+
+  function togglePin(id) {
+    const entry = panes.get(id);
+    if (!entry) return;
+    entry.pinned = !entry.pinned;
+    if (entry.pinned) pinnedTabs.add(id); else pinnedTabs.delete(id);
+    savePinned(pinnedTabs);
+    applyPin(entry);
+    showStatus(entry.pinned ? "tab pinned" : "tab unpinned");
+  }
+
+  // A tiny right-click menu. Rebuilt per invocation; one at a time.
+  let openMenu = null;
+  function closeTabMenu() {
+    if (openMenu) { openMenu.remove(); openMenu = null; }
+  }
+  function showTabMenu(ev, id) {
+    closeTabMenu();
+    const entry = panes.get(id);
+    if (!entry) return;
+    const items = [];
+    if (cfg.allowSharing && !entry.shared) {
+      // Owner-only: opens a dialog to pick access + expiry.
+      let label = "Share…";
+      if (entry.sharerCount > 0) label = "Sharing… (" + entry.sharerCount + ")";
+      else if (entry.sharedOut) label = "Sharing…";
+      items.push(["share", label, () => showShareDialog(id)]);
+      if (entry.sharedOut) items.push(["ban", "Stop sharing", () => stopSharing(id)]);
+    }
+    // Rename is owner-only (the title is shared state).
+    if (!entry.shared) items.push(["edit", "Rename", () => beginRename(id, entry.titleEl)]);
+    if (cfg.multiSession) {
+      items.push(["pin", entry.pinned ? "Unpin" : "Pin", () => togglePin(id)]);
+      if (!entry.pinned) items.push(["close", "Close", () => closeSession(id)]);
+    }
+    if (items.length === 0) return;
+
+    const menu = document.createElement("div");
+    menu.className = "ctxmenu";
+    for (const [ic, label, fn] of items) {
+      const it = document.createElement("div");
+      it.className = "ctxitem";
+      it.innerHTML = iconSVG(ic); // static markup; label added as text below
+      it.appendChild(document.createTextNode(label));
+      it.addEventListener("click", () => { closeTabMenu(); fn(); });
+      menu.appendChild(it);
+    }
+    document.body.appendChild(menu);
+    // Keep it on-screen.
+    const mw = menu.offsetWidth, mh = menu.offsetHeight;
+    menu.style.left = Math.min(ev.clientX, window.innerWidth - mw - 4) + "px";
+    menu.style.top = Math.min(ev.clientY, window.innerHeight - mh - 4) + "px";
+    openMenu = menu;
+  }
+  document.addEventListener("click", closeTabMenu);
+  document.addEventListener("scroll", closeTabMenu, true);
+  window.addEventListener("blur", closeTabMenu);
+
   async function addSession() {
     try {
       // Forward the page query so url_arg/url_env apply to new tabs too;
@@ -760,6 +1048,17 @@
         // the server's static titles overwrite them.
         if (!cfg.tabShowPS1 && !entry.renaming && entry.titleEl.textContent !== info.title) {
           setTabTitle(entry.titleEl, info);
+        }
+        // Reconcile owner-side share state (viewers joining/leaving, links
+        // created/expired in another window): the badge follows sharerCount,
+        // the menu's Stop-sharing follows sharedOut.
+        if (!entry.shared) {
+          const so = !!info.sharedOut, sc = info.sharerCount || 0;
+          if (entry.sharedOut !== so || entry.sharerCount !== sc) {
+            entry.sharedOut = so;
+            entry.sharerCount = sc;
+            applyShareBadge(entry);
+          }
         }
       } else if (cfg.multiSession) {
         createTab(info);
@@ -849,9 +1148,28 @@
       fitActiveSoon();
     });
 
-    // The session list is inlined into the page; falling back to the API
-    // covers older cached pages and defensive corner cases.
-    let list = Array.isArray(cfg.sessions) ? cfg.sessions : [];
+    // Accept a share link (?share=<token>) before building tabs, so the
+    // shared session appears in this page's list. Strip the token from the
+    // URL either way (don't leave a capability sitting in the address bar /
+    // history / future reloads). The accepted session id is activated below.
+    let sharedTarget = null;
+    const shareTok = new URLSearchParams(location.search).get("share");
+    if (shareTok) {
+      try {
+        const info = await api("POST", "sessions/accept", { token: shareTok });
+        sharedTarget = info.id;
+      } catch (e) {
+        showStatus(e.message || "share link invalid or expired");
+      }
+      const u = new URL(location.href);
+      u.searchParams.delete("share");
+      history.replaceState(null, "", u.href);
+    }
+
+    // The session list is inlined into the page; refetch from the API when a
+    // share was just accepted (the inlined list predates it) or the inlined
+    // list is empty.
+    let list = (!sharedTarget && Array.isArray(cfg.sessions)) ? cfg.sessions : [];
     if (list.length === 0) {
       try { list = await api("GET", "sessions"); } catch (e) {}
     }
@@ -863,8 +1181,11 @@
     // Build all tab UIs first (sockets deferred), then connect the
     // previously-active tab immediately so it's usable right away, and
     // stagger the remaining connections behind it in tab order.
+    // Prefer the just-accepted shared tab, else the previously-active one.
     const last = recallActive();
-    const activeTarget = list.some((s) => s.id === last) ? last : list[0].id;
+    let activeTarget = list[0].id;
+    if (sharedTarget && list.some((s) => s.id === sharedTarget)) activeTarget = sharedTarget;
+    else if (list.some((s) => s.id === last)) activeTarget = last;
     for (const info of list) createTab(info, true);
     activate(activeTarget);
     connect(panes.get(activeTarget), activeTarget);

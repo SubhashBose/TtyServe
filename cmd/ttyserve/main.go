@@ -22,7 +22,7 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
-var version = "0.2"
+var version = "0.3"
 var buildDate = ""
 
 func main() {
@@ -33,7 +33,7 @@ func main() {
 	// flags the user actually set override the config file.
 	command := flag.StringP("command", "c", def.Command, "shell-style command line run for each terminal including args")
 	workingDir := flag.StringP("working-dir", "w", def.WorkingDir, "working directory for terminal command (default: server's cwd)")
-	env := flag.StringP("env", "e", strings.Join(def.Env, ","), "extra environment variables for terminal command, comma-separated `KEY=VALUE` pairs. Also supports HTTP header value substitution as ${header.KEY}")
+	env := flag.StringP("env", "e", strings.Join(def.Env, ","), "extra environment variables for terminal command, comma-separated `KEY=VALUE` pairs.\nAlso supports HTTP header value substitution as ${header.KEY}")
 	cfgPath := flag.StringP("config", "C", "", "path to YAML config `file`")
 	listen := flag.StringP("listen", "l", def.Listen, "IP `address`, interface name, or unix://<path> socket to listen on (default: all interfaces)")
 	port := flag.IntP("port", "p", def.Port, "TCP `port` to listen on")
@@ -45,10 +45,11 @@ func main() {
 	sessionPersistence := flag.BoolP("session-persistence", "P", def.SessionPersistence, "keep sessions alive across disconnects")
 	persistenceMode := flag.String("persistence-mode", string(def.PersistenceMode), "how sessions are tied to a client: 'short_term', 'user' or 'proxy_header'")
 	idleTimeout := flag.Duration("idle-timeout", def.IdleTimeout, "for 'short_term' mode: reap sessions with no connection for this long")
-	users := flag.StringP("users", "u", "", "HTTP basic-auth users for 'user' mode, comma-separated `name:password` pairs, each user gets their own session. When session-persistence=false, this is a plain access gate (login required, sessions stay ephemeral)")
+	users := flag.StringP("users", "u", "", "HTTP basic-auth users for 'user' mode, comma-separated `name:password` pairs, each user gets their own session.\nWhen session-persistence=false, user(s) is a plain access gate (login required, sessions stay ephemeral)")
 	authRealm := flag.String("auth-realm", def.AuthRealm, "HTTP basic-auth realm")
-	proxyHeaderName := flag.String("proxy-header-name", def.ProxyHeaderName, "header `key` carrying the user identity for 'proxy_header' persistance mode, each user ID gets their own session")
+	proxyHeaderName := flag.String("proxy-header-name", def.ProxyHeaderName, "header `key` carrying the user identity for 'proxy_header' persistance mode, each user ID gets their own\nsession")
 	scrollback := flag.Int("scrollback-bytes", def.ScrollbackBytes, "server-side replay buffer per persistent session")
+	allowSharing := flag.Bool("allow-sharing", def.AllowSharing, "allow sharing a terminal tab with another authenticated user via a link (need persistent-mode)")
 	maxClients := flag.Int("max-clients-per-session", def.MaxClientsPerSession, "concurrent viewers per session (0 = unlimited)")
 	cookieName := flag.String("cookie-name", def.CookieName, "short_term session cookie name")
 	cookieSecure := flag.Bool("cookie-secure", def.CookieSecure, "mark the session cookie Secure (HTTPS only)")
@@ -56,8 +57,8 @@ func main() {
 	tlsCert := flag.String("tls-cert-file", def.TLSCertFile, "TLS certificate `file` (enables HTTPS)")
 	tlsKey := flag.String("tls-key-file", def.TLSKeyFile, "TLS key `file`")
 	readonly := flag.BoolP("readonly", "r", def.Readonly, "read-only terminals: no client input accepted")
-	urlArg := flag.Bool("url-arg", def.URLArg, "append URL query parameters to the command arguments (see security notes)")
-	urlEnv := flag.Bool("url-env", def.URLEnv, "turn URL query parameters into extra environment variables (see security notes)")
+	urlArg := flag.Bool("url-arg", def.URLArg, "append URL query parameters to the command arguments (see security notes)\ne.g., /?arg1&arg2=5 -> 'command arg1 arg2=5'")
+	urlEnv := flag.Bool("url-env", def.URLEnv, "turn URL query parameters into extra environment variables (see security notes)\ne.g., /?arg1&arg2=5 -> sets ENV var as 'arg1= arg2=5'")
 	pingInterval := flag.Duration("ping-interval", def.PingInterval, "websocket keepalive ping period")
 	fontSize := flag.IntP("font-size", "F", def.FontSize, "terminal font size in px")
 	domRenderer := flag.Bool("dom-renderer", def.DOMRenderer, "use the DOM text renderer instead of canvas (for mobile GPU issues)")
@@ -187,6 +188,8 @@ func main() {
 			cfg.CloseOnExit = *closeOnExit
 		case "auto-respawn":
 			cfg.AutoRespawn = *autoRespawn
+		case "allow-sharing":
+			cfg.AllowSharing = *allowSharing
 		case "tab-show-psname":
 			cfg.TabShowPsname = *tabShowPsname
 		case "tab-show-cwd":

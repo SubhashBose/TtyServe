@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"ttyserve/internal/auth"
 	"ttyserve/internal/config"
@@ -358,6 +359,7 @@ type pageData struct {
 	AutoRespawn        bool
 	CloseOnExit        bool
 	DOMRenderer        bool
+	AllowSharing       bool
 	// Sessions is inlined into the page so the frontend can build tabs and
 	// open websockets immediately, without a follow-up API round trip.
 	Sessions []session.SessionInfo
@@ -419,7 +421,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		AutoRespawn:        s.cfg.AutoRespawn,
 		CloseOnExit:        s.cfg.CloseOnExit,
 		DOMRenderer:        s.cfg.DOMRenderer,
-		Sessions:           cl.List(),
+		AllowSharing:       s.cfg.AllowSharing && s.cfg.SessionPersistence,
+		Sessions:           s.sessionList(cl),
 		V:                  s.assetVer,
 		EphemeralID:        ephemeralID,
 		Favicon:            s.faviconHref,
@@ -431,6 +434,27 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // endpoints that are unauthenticated in short_term mode.
 const maxBodyBytes = 64 << 10
 
+// shareState fills in SharedOut for owned sessions from the manager's live
+// share links (a link exists even before anyone accepts). List() already set
+// it from accepted sharers; this ORs in outstanding links.
+func (s *Server) shareState(cl *session.Client, infos []session.SessionInfo) []session.SessionInfo {
+	for i := range infos {
+		if !infos[i].Shared && !infos[i].SharedOut {
+			infos[i].SharedOut = s.mgr.HasActiveLinks(infos[i].ID)
+		}
+	}
+	return infos
+}
+
+func (s *Server) sessionList(cl *session.Client) []session.SessionInfo {
+	return s.shareState(cl, cl.List())
+}
+
+func (s *Server) oneInfo(cl *session.Client, id string) session.SessionInfo {
+	out := s.shareState(cl, []session.SessionInfo{cl.SessionInfoFor(id)})
+	return out[0]
+}
+
 // GET /sessions -> list; POST /sessions -> create.
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
@@ -440,7 +464,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, cl.List())
+		writeJSON(w, http.StatusOK, s.sessionList(cl))
 	case http.MethodPost:
 		if !s.cfg.MultiSession && cl.Count() >= 1 {
 			http.Error(w, "multi-session disabled", http.StatusForbidden)
@@ -497,6 +521,32 @@ func (s *Server) handleSessionItem(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	// POST /sessions/accept {token} -> attach a session shared with us.
+	// "accept" cannot collide with a UUID session id.
+	if id == "accept" && !hasAction {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
+			http.Error(w, "token required", http.StatusBadRequest)
+			return
+		}
+		sess, err := s.mgr.AcceptShare(cl, strings.TrimSpace(body.Token))
+		if err != nil {
+			code := http.StatusBadRequest
+			if err == session.ErrTooManySessions {
+				code = http.StatusForbidden
+			}
+			http.Error(w, err.Error(), code)
+			return
+		}
+		writeJSON(w, http.StatusOK, s.oneInfo(cl, sess.ID))
+		return
+	}
 	sess, exists := cl.Get(id)
 	if !exists {
 		http.Error(w, "not found", http.StatusNotFound)
@@ -507,17 +557,67 @@ func (s *Server) handleSessionItem(w http.ResponseWriter, r *http.Request) {
 		// (close_on_exit=false keeps the session around after exit).
 		if action == "restart" && r.Method == http.MethodPost {
 			if _, err := s.mgr.RestartSession(cl, id); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				code := http.StatusInternalServerError
+				if err == session.ErrReadOnly {
+					code = http.StatusForbidden
+				}
+				http.Error(w, err.Error(), code)
 				return
 			}
 			writeJSON(w, http.StatusOK, sess.Info())
 			return
+		}
+		// POST /sessions/{id}/share {readOnly, ttl} -> mint a share link.
+		// DELETE /sessions/{id}/share -> revoke all shares of the session.
+		if action == "share" {
+			switch r.Method {
+			case http.MethodPost:
+				var body struct {
+					ReadOnly  bool   `json:"readOnly"`
+					TTL       string `json:"ttl"` // Go duration; "" = never expire
+					SingleUse bool   `json:"singleUse"`
+				}
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				var ttl time.Duration
+				if body.TTL != "" {
+					d, err := time.ParseDuration(body.TTL)
+					if err != nil {
+						http.Error(w, "bad ttl", http.StatusBadRequest)
+						return
+					}
+					ttl = d
+				}
+				token, err := s.mgr.Share(cl, id, body.ReadOnly, ttl, body.SingleUse)
+				if err != nil {
+					code := http.StatusForbidden
+					if err == session.ErrNotFound {
+						code = http.StatusNotFound
+					}
+					http.Error(w, err.Error(), code)
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]string{"token": token})
+				return
+			case http.MethodDelete:
+				if err := s.mgr.RevokeShare(cl, id); err != nil {
+					http.Error(w, err.Error(), http.StatusForbidden)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 		}
 		http.NotFound(w, r)
 		return
 	}
 	switch r.Method {
 	case http.MethodPatch:
+		// The tab title lives on the shared session object, so only the owner
+		// may rename it — a sharer renaming would change the owner's title.
+		if cl.IsShared(id) {
+			http.Error(w, "only the owner can rename this tab", http.StatusForbidden)
+			return
+		}
 		var body struct {
 			Title string `json:"title"`
 		}

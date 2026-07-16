@@ -22,6 +22,10 @@ renameable tab bar.
 - **Single-session mode** — flip`multi-session: false` for one terminal, no tabs.
 - **Persistence off** — set`session-persistence: false` for ttyd-style ephemeral
   terminals that die on disconnect.
+- **Tab sharing** (opt-in, `allow-sharing`) — right-click a tab to copy a share
+  link; another authenticated user opens it and the terminal joins their tab
+  list, view-only or with control. Access persists across their reloads until
+  the owner closes the terminal or revokes. Persistent modes only.
 - Inline graphics support - Sixel and iTerm inline protocol (IIP) graphics
 - Other options: read-only mode, shared viewers per session, custom
   command/args/env/working-dir, TLS, configurable title, ping interval, unix socket listen, socket permission, header value to env variable.
@@ -89,6 +93,7 @@ defaults. See `config.example.yaml` for the annotated file. Key options:
 | `dom-renderer`                        | DOM text rendering instead of canvas — use incase of any GPU blanking issue (default false)                                                                                                                                                       |
 | `disable-hyperlink`                   | `true` = links in output are not clickable (default false)                                                                                                                                                                                       |
 | `middleclick-paste`                   | paste clipboard on middle click (default true)                                                                                                                                                                                                     |
+| `allow-sharing`                       | let a user share a tab with another authenticated user via a link (default false; persistent modes only)                                                                                                                                            |
 | `tab-show-psname` / `tab-show-cwd`  | auto tab title parts: process name / dir (default true)                                                                                                                                                                                            |
 | `tab-show-ps1`                        | title tabs from the shell's window title (default false)                                                                                                                                                                                           |
 | `tab-title`                           | fixed tab title, disables auto-titling                                                                                                                                                                                                             |

@@ -213,6 +213,11 @@ type Config struct {
 	// CloseOnExit: when the shell process exits, remove the session.
 	CloseOnExit bool `yaml:"close-on-exit"`
 
+	// AllowSharing enables sharing a terminal tab with another authenticated
+	// user via a link. Only effective with session persistence on. Off by
+	// default (opt-in).
+	AllowSharing bool `yaml:"allow-sharing"`
+
 	// AutoRespawn: when the last session ends, immediately start a new one.
 	// When false (default), multi-session mode just leaves the tab bar
 	// empty, and single-session mode offers restart on Enter. The first
@@ -248,6 +253,7 @@ func Default() Config {
 		Title:                "TtyServe",
 		CloseOnExit:          true,
 		AutoRespawn:          false,
+		AllowSharing:         false,
 		TabShowPsname:        true,
 		TabShowCwd:           true,
 		TabShowPS1:           false,

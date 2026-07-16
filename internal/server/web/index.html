@@ -51,6 +51,52 @@
   .tab .title { outline: none; }
   .tab .title .dir { color: #8c8c8c; }
   .tab.active .title .dir { color: #9f9f9f; }
+  .icon { width: 13px; height: 13px; display: block; flex: none; }
+  .tab .badge { flex: none; display: flex; align-items: center;
+    color: #7fb2ff; }
+  .tab .badge:empty { display: none; }
+  .tab .badge .icon, .tab .pinicon .icon { width: 11px; height: 11px; }
+  .tab .pinicon { flex: none; display: flex; align-items: center;
+    color: #b8b8b8; }
+  .tab.is-shared { border-color: #4e7ec9; }
+
+  .ctxmenu { position: fixed; z-index: 100; background: var(--bar-bg);
+    border: 1px solid var(--tab-border); border-radius: 6px; padding: 4px;
+    min-width: 180px; box-shadow: 0 6px 20px rgba(0,0,0,.45); font-size: 13px; }
+  .ctxitem { padding: 6px 12px; border-radius: 4px; cursor: pointer;
+    white-space: nowrap; color: var(--fg);
+    display: flex; align-items: center; gap: 9px; }
+  .ctxitem .icon { opacity: .75; }
+  .ctxitem:hover { background: var(--accent); color: #fff; }
+  .ctxitem:hover .icon { opacity: 1; }
+
+  .modal-overlay { position: fixed; inset: 0; z-index: 200;
+    background: rgba(0,0,0,.55); display: flex; align-items: center;
+    justify-content: center; }
+  .modal { background: var(--bar-bg); border: 1px solid var(--tab-border);
+    border-radius: 8px; padding: 20px; width: 420px; max-width: calc(100vw - 32px);
+    box-shadow: 0 10px 40px rgba(0,0,0,.5); color: var(--fg); }
+  .modal-title { margin: 0 0 4px; font-size: 16px; font-weight: 600; }
+  .modal-sub { margin: 0 0 14px; font-size: 12px; color: #9a9a9a; }
+  .modal .field { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+  .modal .field > label { width: 96px; flex: none; font-size: 13px; color: #bcbcbc; }
+  .modal .field.checkbox { align-items: flex-start; }
+  .modal .field.checkbox > input { flex: none; width: auto; margin-top: 2px; accent-color: var(--accent); }
+  .modal .field.checkbox > label { width: auto; flex: 1; cursor: pointer; line-height: 1.4; }
+  .modal select, .modal input { flex: 1; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--tab-border); border-radius: 5px; padding: 6px 8px;
+    font-size: 13px; font-family: inherit; }
+  .modal .result input { font-family: Menlo, Consolas, monospace; font-size: 12px; }
+  .modal-hint { margin: 4px 0 0; font-size: 11px; color: #7c7c7c; line-height: 1.4; }
+  .modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
+  .btn { background: var(--tab-bg); color: var(--fg); border: 1px solid var(--tab-border);
+    border-radius: 5px; padding: 6px 14px; font-size: 13px; cursor: pointer;
+    font-family: inherit; }
+  .btn:hover { border-color: var(--accent); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-primary:hover { filter: brightness(1.12); }
+  .btn-primary:disabled { opacity: .6; cursor: default; }
+  .btn-danger:hover { border-color: #f48771; color: #f48771; }
   .tab .title[contenteditable="true"] { user-select: text; cursor: text; }
   .tab .close { opacity: .6; font-weight: bold; padding: 0 2px; }
   .tab .close:hover { opacity: 1; color: #f48771; }
@@ -95,6 +141,7 @@
     middleclickPaste: {{.MiddleclickPaste}},
     tabShowPS1: {{.TabShowPS1}},
     autoRespawn: {{.AutoRespawn}},
+    allowSharing: {{.AllowSharing}},
     closeOnExit: {{.CloseOnExit}},
     domRenderer: {{.DOMRenderer}},
     ephemeralId: "{{.EphemeralID}}",
