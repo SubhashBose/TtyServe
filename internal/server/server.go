@@ -426,8 +426,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// maxBodyBytes bounds JSON request bodies (titles cap at 64 runes and order
+// lists are small); without it a huge POST body is a memory-DoS vector on
+// endpoints that are unauthenticated in short_term mode.
+const maxBodyBytes = 64 << 10
+
 // GET /sessions -> list; POST /sessions -> create.
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	cl, ok := s.resolve(w, r)
 	if !ok {
 		return
@@ -466,6 +472,7 @@ func (s *Server) handleSessionItem(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	rest := strings.TrimPrefix(r.URL.Path, "/sessions/")
 	id, action, hasAction := strings.Cut(rest, "/")
 	if id == "" {

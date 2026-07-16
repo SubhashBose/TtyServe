@@ -216,7 +216,13 @@ func main() {
 		log.Fatalf("server: %v", err)
 	}
 
-	httpSrv := &http.Server{Handler: srv.Handler()}
+	httpSrv := &http.Server{
+		Handler: srv.Handler(),
+		// Bound how long a client may dribble request headers (slow-loris);
+		// deliberately no overall Read/WriteTimeout — long-lived websockets
+		// manage their own deadlines.
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	specs, err := cfg.ListenSpecs()
 	if err != nil {

@@ -74,9 +74,13 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 			}
 		}
 		eid := r.URL.Query().Get("eid")
-		// Cap hostile/garbage tokens: an over-long eid gets a fresh identity
-		// instead of stuffing an arbitrarily large key into the client map.
-		if eid == "" || len(eid) > 64 {
+		// Anti-fixation: the index NEVER honors a client-supplied eid — the
+		// page only sends eid on API/websocket requests, so an eid on "/" can
+		// only be an attacker-crafted link trying to plant a known identity
+		// on the victim's page (letting the attacker attach to their
+		// terminal). Also cap hostile/garbage tokens rather than stuffing
+		// arbitrarily large keys into the client map.
+		if r.URL.Path == "/" || eid == "" || len(eid) > 64 {
 			eid = randToken(16)
 		}
 		return Identity{Key: "ephemeral-" + eid}, nil
@@ -167,7 +171,13 @@ func (a *Authenticator) basicAuthOK(r *http.Request) bool {
 		return false
 	}
 	want, exists := a.users[user]
-	return exists && subtle.ConstantTimeCompare([]byte(pass), []byte(want)) == 1
+	if !exists {
+		// Compare against a dummy anyway so unknown usernames take the same
+		// time as wrong passwords (no username enumeration via timing).
+		subtle.ConstantTimeCompare([]byte(pass), []byte("no-such-user-dummy"))
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(pass), []byte(want)) == 1
 }
 
 // WriteUnauthorized emits a 401 with a basic-auth challenge.
