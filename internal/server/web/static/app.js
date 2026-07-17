@@ -618,6 +618,9 @@
     entry.renaming = true;
     entry.tabEl.draggable = false; // text selection must not start a drag
     const old = titleEl.textContent;
+    // Auto titles are styled DOM (bright process + dim .dir span); keep the
+    // exact markup so cancelling restores the styling, not flattened text.
+    const origHTML = titleEl.innerHTML;
     titleEl.contentEditable = "true";
     titleEl.focus();
     // Select all text.
@@ -635,10 +638,15 @@
       titleEl.removeEventListener("blur", onBlur);
       const next = titleEl.textContent.trim();
       if (commit && next && next !== old) {
+        // A rename converts the tab to a plain user title (the server pins
+        // it and drops the ps/dir components) — render it that way now, or
+        // text edited inside the dim .dir span would stay dim until reload.
+        setTabTitle(titleEl, { title: next });
         api("PATCH", "sessions/" + encodeURIComponent(id), { title: next })
-          .catch(() => { titleEl.textContent = old; });
+          .catch(() => { titleEl.innerHTML = origHTML; });
       } else {
-        titleEl.textContent = old;
+        // Cancelled or unchanged: restore the original styled title as-was.
+        titleEl.innerHTML = origHTML;
       }
     }
     function onKey(e) {
