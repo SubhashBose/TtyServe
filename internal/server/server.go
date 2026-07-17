@@ -360,6 +360,9 @@ type pageData struct {
 	CloseOnExit        bool
 	DOMRenderer        bool
 	AllowSharing       bool
+	// PingSeconds lets the client derive the server's dead-peer deadline
+	// (3× ping-interval) for its own liveness give-up limit.
+	PingSeconds int
 	// Sessions is inlined into the page so the frontend can build tabs and
 	// open websockets immediately, without a follow-up API round trip.
 	Sessions []session.SessionInfo
@@ -422,6 +425,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		CloseOnExit:        s.cfg.CloseOnExit,
 		DOMRenderer:        s.cfg.DOMRenderer,
 		AllowSharing:       s.cfg.AllowSharing && s.cfg.SessionPersistence,
+		PingSeconds:        int(s.cfg.PingInterval / time.Second),
 		Sessions:           s.sessionList(cl),
 		V:                  s.assetVer,
 		EphemeralID:        ephemeralID,

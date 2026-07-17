@@ -60,7 +60,7 @@ users:
 auth-realm: "ttyserve"       # (default: ttyserve)
 
 # --- Short-term sessions (persistence-mode: short_term) ---
-idle-timeout: 5m             # reap sessions with no connection this long (default: 5m)
+idle-timeout: 5s             # reap sessions with no connection this long (default: 5m)
 cookie-name: "ttyserve_session"  # (default: ttyserve_session)
 cookie-secure: false         # set true when serving over HTTPS (default: false)
 

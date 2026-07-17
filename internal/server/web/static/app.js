@@ -172,6 +172,7 @@
       entry.term.reset();
       entry.connected = true;
       entry.lastSeen = Date.now();
+      entry._paintedConn = false; // re-fit on this connection's first output
       entry._backoff = 500;
       updateTabState(entry);
       showStatus("connected");
@@ -195,6 +196,14 @@
         refreshConnStatus();
       }
       if (data.length === 0) return;
+      // First real output of this connection: force a fit on the active tab.
+      // A respawned/reloaded terminal can be sized before its pane has real
+      // dimensions, leaving the prompt unpainted until some later resize —
+      // this paints it as soon as there's something to show.
+      if ((data[0] === S_OUTPUT || data[0] === S_REPLAY) && !entry._paintedConn) {
+        entry._paintedConn = true;
+        if (entry.id === activeId) fitActiveSoon();
+      }
       if (data[0] === S_OUTPUT) {
         entry.term.write(data.subarray(1));
       } else if (data[0] === S_REPLAY) {
@@ -989,8 +998,10 @@
     if (cfg.allowSharing && !entry.shared) {
       // Owner-only: opens a dialog to pick access + expiry.
       let label = "Share…";
-      if (entry.sharerCount > 0) label = "Sharing… (" + entry.sharerCount + ")";
-      else if (entry.sharedOut) label = "Sharing…";
+      if (entry.sharerCount > 0) {
+        label = "Sharing… (" + entry.sharerCount +
+          (entry.sharerCount === 1 ? " user)" : " users)");
+      } else if (entry.sharedOut) label = "Sharing…";
       items.push(["share", label, () => showShareDialog(id)]);
       if (entry.sharedOut) items.push(["ban", "Stop sharing", () => stopSharing(id)]);
     }
@@ -1103,12 +1114,27 @@
     // again (instant recovery, handled in onmessage) or the socket dies for
     // real and onclose runs the normal reconnect. Skipped while hidden
     // (throttled timers would false-positive; resumes when visible).
-    setInterval(() => {
+    // Past the server's dead-peer deadline (3× ping-interval) a silent
+    // connection cannot resume — the server has already hung up. Waiting
+    // longer only defers reconnect until the OS abandons TCP retransmission
+    // (often a minute or more), which showed up as "respawn takes a minute"
+    // after an idle-reap. Force the reconnect path at that point instead.
+    const DEAD_AFTER = Math.max(65000, ((cfg.pingSeconds || 20) * 3 + 5) * 1000);
+    function livenessTick() {
       if (document.hidden) return;
       const now = Date.now();
       for (const entry of panes.values()) {
         if (!entry.ws || entry.ws.readyState !== WebSocket.OPEN) continue;
-        if (entry.connected && now - (entry.lastSeen || now) > 30000) {
+        const silent = now - (entry.lastSeen || now);
+        if (silent > DEAD_AFTER) {
+          entry.connected = false;
+          entry.stalled = false;
+          updateTabState(entry);
+          refreshConnStatus();
+          try { entry.ws.close(); } catch (e) {} // onclose -> alive-check -> reconnect/respawn
+          continue;
+        }
+        if (entry.connected && silent > 30000) {
           entry.connected = false;
           entry.stalled = true;
           updateTabState(entry);
@@ -1118,7 +1144,8 @@
         // dead connection) is what resolves the stall either way.
         try { entry.ws.send(C_PING); } catch (e) {}
       }
-    }, 10000);
+    }
+    setInterval(livenessTick, 10000);
 
     // React to connectivity changes: on restore, skip the pending backoff
     // and redial every disconnected tab immediately; while offline, show a
@@ -1154,6 +1181,10 @@
         loadRenderer(entry);
       }
       fitActiveSoon();
+      // Don't wait up to 10s for the next tick: judge connections now, so a
+      // tab whose socket died (and session expired) while hidden starts its
+      // reconnect/respawn the moment the user comes back.
+      livenessTick();
     });
 
     // Accept a share link (?share=<token>) before building tabs, so the

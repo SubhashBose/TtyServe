@@ -140,6 +140,46 @@ The directory comes from two sources, best first:
   every few seconds, and only for sessions that produced output and have a
   viewer attached).
 
+## Sharing a terminal
+
+Enable with `allow-sharing: true` (persistent modes only — `user`,
+`short_term`, `proxy_header`). Off by default.
+
+Once enabled, **right-click any tab you own → Share…** to open the share
+dialog. You choose:
+
+- **Access** — *View only* (the other person watches, cannot type) or *Allow
+  control* (they can type into the same shell as you).
+- **Link expires** — Never, or a time window (1 hour up to 7 days). This limits
+  how long the link can be *accepted*; access already granted keeps working.
+- **One-time** — the link stops working after the first person accepts it.
+
+Click **Create link** and the shareable link is copied to your clipboard. Send
+it to another user; when they open it they must sign in as usual (sharing never
+bypasses authentication), and the terminal then appears as a tab in their list.
+Their access is durable — it survives page reloads and re-logins — until you
+stop sharing or the terminal closes.
+
+**What you'll see in the interface:**
+
+- A tab's **share icon appears only once someone has actually joined** — a link
+  that exists but hasn't been accepted yet does not badge the tab.
+- The right-click menu shows **Sharing… (N users)** once people have joined, so
+  you can tell at a glance how many are connected.
+- **Stop sharing** revokes everything at once: it invalidates all outstanding
+  links (even ones nobody accepted yet) and immediately disconnects everyone
+  currently viewing. It appears as soon as a link exists, not only after
+  someone joins. Your own terminal keeps running.
+- Shared-in tabs (terminals shared *to* you) show an eye icon for view-only or a
+  link icon for control, and you can't rename them (the title belongs to the
+  owner).
+
+Limits still apply: `max-clients-per-session` counts you plus every shared
+viewer, and an accepted share counts against the accepter's
+`max-sessions-per-client`. Because a share link is a capability, only hand it to
+people you'd trust with that terminal, and prefer *View only* and expiring or
+one-time links when you just want someone to watch.
+
 ## Robustness & protocol details
 
 - **Slow-client isolation** — the PTY read loop never blocks on a consumer.

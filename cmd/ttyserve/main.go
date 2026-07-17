@@ -227,6 +227,17 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Startup summary: one line for the version + effective options, then one
+	// line per bound listener below.
+	v := version
+	if buildDate != "" {
+		v += " (built " + buildDate + ")"
+	}
+	log.Printf("TtyServe v%s starting", v)
+	log.Printf("options: persistence=%v mode=%s multi-session=%v readonly=%v sharing=%v tls=%v",
+		cfg.SessionPersistence, cfg.PersistenceMode, cfg.MultiSession,
+		cfg.Readonly, cfg.AllowSharing && cfg.SessionPersistence, cfg.TLSEnabled())
+
 	specs, err := cfg.ListenSpecs()
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -257,18 +268,16 @@ func main() {
 				}
 			}
 		}
-		// Mirror the user's listen syntax: unix://<path> for sockets (with
-		// an explicit tls= field), http(s)://host:port for TCP.
+		// Mirror the user's listen syntax: unix://<path> for sockets,
+		// http(s)://host:port for TCP (the options line above carries tls=).
 		if sp.Network == "unix" {
-			log.Printf("TtyServe listening on unix://%s (tls=%v persistence=%v mode=%s multi=%v)",
-				ln.Addr(), sp.TLS, cfg.SessionPersistence, cfg.PersistenceMode, cfg.MultiSession)
+			log.Printf("listening on unix://%s", ln.Addr())
 		} else {
 			scheme := "http"
 			if sp.TLS {
 				scheme = "https"
 			}
-			log.Printf("TtyServe listening on %s://%s (persistence=%v mode=%s multi=%v)",
-				scheme, ln.Addr(), cfg.SessionPersistence, cfg.PersistenceMode, cfg.MultiSession)
+			log.Printf("listening on %s://%s", scheme, ln.Addr())
 		}
 		go func(sp config.ListenSpec, ln net.Listener) {
 			var err error
