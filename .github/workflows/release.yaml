@@ -4,6 +4,10 @@ on:
   push:
     paths:
       - '**.go'
+      - '**.js'
+      - '**.css'
+      - '**.html'
+      - '**.svg'
   workflow_dispatch:
 
 permissions:

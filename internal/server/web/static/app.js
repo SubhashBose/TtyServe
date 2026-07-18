@@ -1031,7 +1031,13 @@
     openMenu = menu;
   }
   document.addEventListener("click", closeTabMenu);
-  document.addEventListener("scroll", closeTabMenu, true);
+  document.addEventListener("scroll", (e) => {
+    // A printing terminal scrolls its own viewport constantly — that must
+    // not dismiss the menu. Only scrolling of the surrounding UI (tab bar,
+    // page) closes it.
+    if (e.target instanceof Element && e.target.closest(".term-pane")) return;
+    closeTabMenu();
+  }, true);
   window.addEventListener("blur", closeTabMenu);
 
   async function addSession() {
@@ -1181,10 +1187,33 @@
         loadRenderer(entry);
       }
       fitActiveSoon();
-      // Don't wait up to 10s for the next tick: judge connections now, so a
-      // tab whose socket died (and session expired) while hidden starts its
-      // reconnect/respawn the moment the user comes back.
-      livenessTick();
+      // Silence accumulated while hidden is NOT evidence of a dead link —
+      // the heartbeat doesn't ping hidden tabs, so lastSeen simply goes
+      // stale even on a healthy connection (this used to flash red +
+      // "reconnecting…" on every return). Instead of judging stale data,
+      // probe: re-arm the clock and ping each open socket. A healthy one
+      // answers in milliseconds and nothing is shown; a dead one is closed
+      // after a short grace and takes the normal reconnect path.
+      const now = Date.now();
+      for (const e of panes.values()) {
+        if (!e.ws || e.ws.readyState !== WebSocket.OPEN) continue;
+        if (now - (e.lastSeen || now) <= 30000) continue; // fresh; tick handles it
+        e.lastSeen = now; // re-arm so livenessTick doesn't insta-judge
+        const sentAt = now;
+        try { e.ws.send(C_PING); } catch (err) {}
+        clearTimeout(e._probeTimer);
+        e._probeTimer = setTimeout(() => {
+          if (!panes.has(e.id)) return;
+          // Nothing (pong or output) arrived since the probe: really dead.
+          if (e.lastSeen <= sentAt && e.ws && e.ws.readyState === WebSocket.OPEN) {
+            e.connected = false;
+            e.stalled = false;
+            updateTabState(e);
+            refreshConnStatus();
+            try { e.ws.close(); } catch (err) {} // onclose -> reconnect/respawn
+          }
+        }, 5000);
+      }
     });
 
     // Accept a share link (?share=<token>) before building tabs, so the
