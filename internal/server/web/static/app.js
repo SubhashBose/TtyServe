@@ -138,7 +138,38 @@
     if (cfg.graphics && window.ImageAddon) {
       try { term.loadAddon(new ImageAddon.ImageAddon()); } catch (e) {}
     }
+    // OSC 52 clipboard: programs (tmux, vim +clipboard, etc.) emit
+    // ESC]52;c;<base64> to set the system clipboard. Honour the write, but
+    // never the read query ("?") — that would let untrusted output exfiltrate
+    // the user's clipboard. Best-effort: the browser may still block a
+    // clipboard write with no user gesture, but Chromium usually allows it
+    // for a focused, secure-context page.
+    if (cfg.clipboardWrite && term.parser && term.parser.registerOscHandler) {
+      try {
+        term.parser.registerOscHandler(52, (data) => {
+          const semi = data.indexOf(";");
+          const payload = semi >= 0 ? data.slice(semi + 1) : data;
+          if (!payload || payload === "?") return true; // ignore reads
+          try { copyText(decodeB64Utf8(payload), entryForTerm(term)); } catch (e) {}
+          return true; // handled
+        });
+      } catch (e) {}
+    }
     return { term, fit };
+  }
+
+  // Decode base64 to a UTF-8 string (atob yields Latin-1 bytes).
+  function decodeB64Utf8(b64) {
+    const bin = atob(b64.replace(/\s+/g, ""));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+
+  // The pane entry owning a given xterm instance (for refocus after copy).
+  function entryForTerm(term) {
+    for (const e of panes.values()) if (e.term === term) return e;
+    return null;
   }
 
   // Upgrade from xterm's DOM renderer (which turns choppy once images are

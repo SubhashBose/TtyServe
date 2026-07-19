@@ -94,6 +94,9 @@ enable-graphics: true        # inline images via sixel/iTerm2 protocol (default:
                              # turn off for shared read-only viewing or low-memory clients
 disable-hyperlink: false     # true = links in output are not clickable (default: false)
 middleclick-paste: true      # paste clipboard on middle click (default: true)
+clipboard-write: true        # let terminal programs set the system clipboard via OSC 52,
+                             # e.g. tmux copy / vim +clipboard / ai coding harnesses
+                             # (default: true; write only — clipboard reads are ignored)
 title: "TtyServe"            # browser page title (default: TtyServe)
 favicon: ""                  # custom favicon: a server file path, or a data: URI
                              # e.g. "data:image/png;base64,...."

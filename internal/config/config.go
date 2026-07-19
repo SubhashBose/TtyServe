@@ -171,6 +171,12 @@ type Config struct {
 	// terminal). Set false to disable.
 	MiddleclickPaste bool `yaml:"middleclick-paste"`
 
+	// ClipboardWrite lets terminal programs set the system clipboard via the
+	// OSC 52 escape sequence (tmux, vim +clipboard, etc.). Write only — read
+	// queries are ignored so output can't exfiltrate the clipboard. Set false
+	// to block clipboard writes from terminal output entirely.
+	ClipboardWrite bool `yaml:"clipboard-write"`
+
 	// DOMRenderer uses xterm's DOM text renderer instead of the canvas one.
 	// Slower scrolling, but immune to mobile GPU canvas blanking (Android
 	// Chromium can black out the text canvas when sixel images allocate
@@ -250,6 +256,7 @@ func Default() Config {
 		EnableGraphics:       true,
 		DisableHyperlink:     false,
 		MiddleclickPaste:     true,
+		ClipboardWrite:       true,
 		Title:                "TtyServe",
 		CloseOnExit:          true,
 		AutoRespawn:          false,

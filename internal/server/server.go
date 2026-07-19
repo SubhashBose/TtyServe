@@ -364,6 +364,7 @@ type pageData struct {
 	EnableGraphics     bool
 	DisableHyperlink   bool
 	MiddleclickPaste   bool
+	ClipboardWrite     bool
 	TabShowPS1         bool
 	AutoRespawn        bool
 	CloseOnExit        bool
@@ -429,6 +430,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		EnableGraphics:     s.cfg.EnableGraphics,
 		DisableHyperlink:   s.cfg.DisableHyperlink,
 		MiddleclickPaste:   s.cfg.MiddleclickPaste,
+		ClipboardWrite:     s.cfg.ClipboardWrite,
 		TabShowPS1:         s.cfg.TabShowPS1,
 		AutoRespawn:        s.cfg.AutoRespawn,
 		CloseOnExit:        s.cfg.CloseOnExit,
