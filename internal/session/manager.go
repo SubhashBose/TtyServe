@@ -256,13 +256,22 @@ func (m *Manager) AcceptShare(c *Client, token string) (*Session, error) {
 	if !m.sharingEnabled() {
 		return nil, ErrShareInvalid
 	}
+	// Hold sharesMu across the ENTIRE accept — validating the grant and
+	// registering this client as a sharer must be atomic w.r.t. RevokeShare.
+	// Otherwise a revoke can delete the grant and evict the current sharers
+	// in the window between the token check and addSharerClient, leaving the
+	// accepter with access the owner just revoked (RevokeShare keeps the
+	// session, so the owner/session lookups don't catch it). sharesMu is the
+	// outermost lock — nothing acquires it while holding m.mu / a client /
+	// a session lock — so descending into those here is deadlock-free.
 	m.sharesMu.Lock()
+	defer m.sharesMu.Unlock()
+
 	g, ok := m.shares[token]
 	if ok && !g.expires.IsZero() && time.Now().After(g.expires) {
 		delete(m.shares, token)
 		ok = false
 	}
-	m.sharesMu.Unlock()
 	if !ok {
 		return nil, ErrShareInvalid
 	}
@@ -290,9 +299,7 @@ func (m *Manager) AcceptShare(c *Client, token string) (*Session, error) {
 	// A single-use link is spent on first successful accept. The granted
 	// access lives on as a reference in the accepter's client.
 	if g.singleUse {
-		m.sharesMu.Lock()
 		delete(m.shares, token)
-		m.sharesMu.Unlock()
 	}
 	return s, nil
 }
