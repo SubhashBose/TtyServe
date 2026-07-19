@@ -180,6 +180,12 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 				_, _ = term.Write(payload)
 			}
 		case msgResize:
+			// A read-only viewer must not reshape the shared terminal — a
+			// resize changes the PTY width for the owner and every other
+			// viewer. Read-write viewers may resize (shared control).
+			if readOnly {
+				break
+			}
 			var rp resizePayload
 			if err := json.Unmarshal(payload, &rp); err == nil && rp.Cols > 0 && rp.Rows > 0 {
 				_ = term.Resize(rp.Rows, rp.Cols)

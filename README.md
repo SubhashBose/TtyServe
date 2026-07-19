@@ -203,6 +203,10 @@ viewer, and an accepted share counts against the accepter's
 people you'd trust with that terminal, and prefer *View only* and expiring or
 one-time links when you just want someone to watch.
 
+When share is readonly, the terminal display width is determined by only owner's browser window size. However, if share is read+write (allow control) share, the terminal width can change according to both owner and shared users browser window size (whoever last renders the page or resizes the window).
+
+Note: When displaying full screen terminal programs when sharing, like VI or even top, it is recommended to keep the main input user's browser window smaller than all viewers browser windows. This is because terminal display width is determined by input/main user, and if viewer widows is smaller, then texts would overflow in viewer's terminal, and would cause undesireable display.  
+
 ## Robustness & protocol details
 
 - **Slow-client isolation** — the PTY read loop never blocks on a consumer.
