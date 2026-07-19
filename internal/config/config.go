@@ -146,7 +146,7 @@ type Config struct {
 
 	// URLEnv turns the page URL's query parameters into extra environment
 	// variables: /?arg1&arg2=5 runs the command with arg1= and arg2=5 set.
-	// Mutually exclusive with URLArg. Same security caveat.
+	// May be combined with URLArg (each param becomes both). Same caveat.
 	URLEnv bool `yaml:"url-env"`
 
 	// MaxClientsPerSession limits concurrent websockets attached to one
@@ -343,9 +343,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Port < 1 || c.Port > 65535 {
 		return fmt.Errorf("port must be 1-65535, got %d", c.Port)
-	}
-	if c.URLArg && c.URLEnv {
-		return fmt.Errorf("url-arg and url-env are mutually exclusive")
 	}
 	// Fail fast on a bad socket-perm (bad mode, unknown user/group).
 	if _, err := c.ParseSocketPerm(); err != nil {

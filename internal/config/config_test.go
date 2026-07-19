@@ -83,8 +83,8 @@ func TestValidateOptionInteractions(t *testing.T) {
 	cfg := Default()
 	cfg.URLArg = true
 	cfg.URLEnv = true
-	if err := cfg.Validate(); err == nil {
-		t.Error("Validate: url_arg + url_env should be rejected")
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate: url-arg + url-env may be combined: %v", err)
 	}
 
 	cfg = Default()

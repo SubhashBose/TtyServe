@@ -321,13 +321,22 @@ func (s *Server) urlSpawnParams(r *http.Request) (args, env []string) {
 		if err1 != nil || err2 != nil {
 			continue
 		}
+		// Skip query params the frontend uses internally, so they never leak
+		// into the spawned command (eid = ephemeral identity, share = accept
+		// token).
+		if ku == "eid" || ku == "share" {
+			continue
+		}
+		// url-arg and url-env are independent — both may be enabled, in which
+		// case each parameter becomes an argument AND an env var.
 		if s.cfg.URLArg {
 			arg := ku
 			if strings.Contains(tok, "=") {
 				arg = ku + "=" + vu
 			}
 			args = append(args, arg)
-		} else if ku != "" {
+		}
+		if s.cfg.URLEnv && ku != "" {
 			env = append(env, ku+"="+vu)
 		}
 	}

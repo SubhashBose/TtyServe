@@ -75,8 +75,9 @@ tls-key-file: ""
 # --- Behaviour ---
 readonly: false              # true = read-only terminals, no client input (default: false)
 
-# URL query parameters as spawn parameters (default: both false; mutually
-# exclusive). SECURITY: either one lets any client who can open the page
+# URL query parameters as spawn parameters (default: both false). Both may be
+# enabled together, in which case each parameter becomes an argument AND an
+# env var. SECURITY: either one lets any client who can open the page
 # influence the spawned command — only enable behind trusted access control.
 #   url-arg: true -> /?arg1&arg2=5 runs "command arg1 arg2=5"
 #   url-env: true -> /?arg1&arg2=5 runs command with env arg1= and arg2=5

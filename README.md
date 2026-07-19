@@ -63,62 +63,75 @@ ttyserve --upgrade
 ./ttyserve --upgrade   # download and install the latest release, then exit
 ```
 
-Open http://localhost:7681.
+Open http://localhost:7681 (default listen address:port).
 
 ## Configuration
 
 Every option is available both in the YAML config and as a CLI flag of the
 same name; flags override the file. `ttyserve --help` lists them all with
-defaults. See `config.example.yaml` for the annotated file. Key options:
+defaults. See `config.example.yaml` for the annotated file with detailed information for each options. The available options are:
 
 | Option                                  | Meaning                                                                                                                                                                                                                                            |
 | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `command` | what each terminal runs;`command` is a full shell-style line, e.g. `"/usr/bin/tmux new -A -s main"`.  |
+| `working-dir`                         | working directory for terminal command (default: server's working directory) |
+| `env`                                 |  `env` entries may contain `${header.NAME}`, expanded from the request header at spawn time (e.g. `USER=${header.X-Forwarded-User}`) |
 | `listen`                              | IP address, interface name, or `unix://<path>` socket (default: all interfaces)                                                                                                                                                                  |
 | `port`                                | TCP port (default 7681; ignored for unix sockets)                                                                                                                                                                                                  |
 | `socket-perm`                         | unix socket permissions,`mode[:user[:group]]` (e.g. `660` or `0660::www-data`); default: umask decides                                                                                                                                       |
-| `command` | what each terminal runs;`command` is a full shell-style line, e.g. `"/usr/bin/tmux new -A -s main"`.  |
-| `env`                                 |  `env` entries may contain `${header.NAME}`, expanded from the request header at spawn time (e.g. `USER=${header.X-Forwarded-User}`) |
-| `working-dir`                         | working directory for terminal command (default: server's working directory) |
-| `session-persistence`                 | master on/off for persistence (default: true)                                                                                                                                                                                                      |
-| `persistence-mode`                    | `user`, `short_term` or `proxy_header` (default: `short_term`)                                                                                                                                                                             |
-| `proxy-header-name`                   | header carrying the identity in `proxy_header` mode (default `X-Forwarded-User`)                                                                                                                                                               |
-| `users`                               | list of comma-separated `name:password` pairs for `user` mode; with persistence off they act as a plain access gate                                                                                                                            |
-| `auth-realm`                          | HTTP basic-auth realm shown in the browser's login prompt (default `ttyserve`)                                                                                                                                                                    |
-| `idle-timeout`                        | short-term session lifetime when disconnected (default: 5m)                                                                                                                                                                                        |
-| `cookie-name`                         | short-term session cookie name (default `ttyserve_session`); change to run multiple instances on one host                                                                                                                                          |
-| `cookie-secure`                       | mark the session cookie `Secure` — HTTPS only (default false; set true behind TLS)                                                                                                                                                                |
 | `multi-session`                       | enable tabs / multiple terminals (default: true)                                                                                                                                                                                                   |
 | `max-sessions-per-client`             | cap on tabs per client, incl. accepted shares (0 = unlimited)                                                                                                                                                                                      |
 | `close-on-exit`                       | remove a session/tab when its command exits (default true); false keeps the tab and offers restart on Enter                                                                                                                                        |
-| `auto-respawn`                        | start a new session immediately when the last one ends (default false = empty tab bar / restart on Enter)                                                                                                                                          |
-| `tab-bar-position`                    | `top` or `right`                                                                                                                                                                                                                               |
-| `readonly`                            | `true` = read-only terminals, no client input                                                                                                                                                                                                    |
-| `url-arg` / `url-env`               | URL query params become command args / env vars (mutually exclusive; security-sensitive)                                                                                                                                                           |
-| `max-clients-per-session`             | shared-viewer cap (0 = unlimited)                                                                                                                                                                                                                  |
+| `auto-respawn`                        | start a new session immediately when the last one ends (default false = will show empty tab bar / 'restart on Enter' when multi-session off)                                                                                                                                          |
+| `session-persistence`                 | master on/off for persistence (default: true)                                                                                                                                                                                                      |
+| `persistence-mode`                    | `user`, `short_term` or `proxy_header` (default: `short_term`)                                                                                                                                                                             |
+| `idle-timeout`                        | short-term session lifetime when disconnected (default: 5m)                                                                                                                                                                                        |
+| `users`                               | list of comma-separated `name:password` pairs for `user` mode; with persistence off they act as a plain access gate                                                                                                                            |
+| `auth-realm`                          | HTTP basic-auth realm shown in the browser's login prompt (default `ttyserve`)                                                                                                                                                                    |
+| `proxy-header-name`                   | header carrying the identity in `proxy_header` mode (default `X-Forwarded-User`)                                                                                                                                                               |
 | `scrollback-bytes`                    | server-side replay buffer per session (default: 262144)                                                                                                                                                                                            |
+| `allow-sharing`                       | let a user share a tab with another authenticated user via a link (default false), works in persistent modes only                                                                                                                                            |
+| `max-clients-per-session`             | shared-viewer cap (default: 0 = unlimited)                                                                                                                                                                                                                  |
+| `cookie-name`                         | short-term session cookie name (default `ttyserve_session`); change to run multiple instances on one host                                                                                                                                          |
+| `cookie-secure`                       | mark the session cookie `Secure` — HTTPS only (default false; set true behind TLS)                                                                                                                                                                |
+| `allow-origins`                       | extra websocket origins beyond same-host;`["*"]` = any                                                                                                                                                                                           |
+| `tls-cert-file` / `tls-key-file`    | path of tls cert/key files, both needed, this enables TLS (applies to TCP and unix-socket listeners alike)                                                                                                                                                                                        |
+| `readonly`                            | `true` = read-only terminals, no client input (default: false)                                                                                                                                                                                                   |
+| `url-arg`               | URL query params become command args (security-sensitive). e.g., `/?arg1&arg2=5` -> runs as `command arg1 arg2=5`                                                            |
+| `url-env`               | URL query params become command env vars (security-sensitive). e.g., `/?arg1&arg2=5` -> sets ENV var as `arg1= arg2=5` for the command           |
 | `ping-interval`                       | websocket keepalive ping period (default 20s); dead peers are reclaimed after 3× this                                                                                                                                                              |
 | `font-size`                           | terminal font size in px (default 14)                                                                                                                                                                                                              |
-| `enable-graphics`                     | inline images via sixel + iTerm2 protocol (default true)                                                                                                                                                                                           |
 | `dom-renderer`                        | DOM text rendering instead of canvas — use incase of any GPU blanking issue (default false)                                                                                                                                                       |
+| `enable-graphics`                     | inline images via sixel + iTerm2 protocol (default true)                                                                                                                                                                                           |
 | `disable-hyperlink`                   | `true` = links in output are not clickable (default false)                                                                                                                                                                                       |
 | `middleclick-paste`                   | paste clipboard on middle click (default true)                                                                                                                                                                                                     |
-| `allow-sharing`                       | let a user share a tab with another authenticated user via a link (default false; persistent modes only)                                                                                                                                            |
-| `tab-show-psname` / `tab-show-cwd`  | auto tab title parts: process name / dir (default true for both)                                                                                                                                                                                            |
-| `tab-show-ps1`                        | title tabs from the shell's window title (default false)                                                                                                                                                                                           |
-| `tab-title`                           | fixed tab title, disables auto-titling                                                                                                                                                                                                             |
 | `title`                               | browser page title (default `TtyServe`)                                                                                                                                                                                                            |
 | `favicon`                             | custom icon: file path or base64 encoded `data:` URI (default: built-in)                                                                                                                                                                         |
-| `tls-cert-file` / `tls-key-file`    | enable TLS (applies to TCP and unix-socket listeners alike)                                                                                                                                                                                        |
-| `allow-origins`                       | extra websocket origins beyond same-host;`["*"]` = any                                                                                                                                                                                           |
+| `tab-bar-position`                    | `top` or `right`                                                                                                                                                                                                                               |
+| `tab-show-psname` / `tab-show-cwd`  | auto tab title parts: foreground process name / terminal's current-directory (default true for both)                                                                                                                                                                                            |
+| `tab-show-ps1`                        | auto title tabs from the shell's window title (default false), overrides `tab-show-psname` / `tab-show-cwd` titling                                                                                                                                                                                        |
+| `tab-title`                           | fixed tab title, disables all auto-tab-titling                                                                                                                                                                                                             |
+
+Other CLI exclusive flags are:
+
+| flag | Meaning |
+|------|---------|
+| -C, --config | path to YAML config file to load configuration options |
+| -V, --version | Print the version and build date of TtyServe binary |
+| --upgrade | Self-update the binary to latest release |
+| -h, --help | Print CLI help with all options |
+
+
+The boolean configuration options (true/false) can be set in config YAML file, and/or through CLI flags. Boolean option that are `true` by default can be set to false in CLI as `--option=false`.
 
 ### Session lifecycle
 
-- **user mode**: identity =`user:<name>`. Sessions persist across reconnects and
+- **user mode**: identity =`<user>:<password>`, username of HTTP basic-auth. Sessions persist across reconnects and
   across browsers (same credentials) until the shell exits.
 - **proxy_header mode**: identity =`header:<value>` of`proxy-header-name`.
   Same lifecycle as user mode. Requests without the header get 403 (fail
   closed — a misconfigured proxy must not hand out sessions).
-- **short_term mode**: identity =`cookie:<token>` from a signed HttpOnly cookie.
+- **short_term mode**: identity =`cookie:<token>` from a signed HttpOnly session cookie set by TtyServe.
   When all websockets for a client detach, an idle timer starts; after`idle-timeout` the client and all its sessions are killed by the reaper.
 - **persistence off**: each page load is a fresh ephemeral identity; closing the
   socket discards the session. If`users` are configured, they gate access

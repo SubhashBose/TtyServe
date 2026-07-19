@@ -82,7 +82,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  or\n")
 		fmt.Fprintf(os.Stderr, "  %s --config config.yaml\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "Can be configured through CLI options, or YAML config file, or combined. Config file keys names are same as CLI options.\n")
-		fmt.Fprintf(os.Stderr, "To turn off a flag which defaults to true, set it false like --close-on-exit=false\n\n")
+		fmt.Fprintf(os.Stderr, "To turn off a boolean flag which defaults to true, set it false as '--option=false'\n\n")
 		fmt.Fprintf(os.Stderr, "Options:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\n\nFull documentation: https://github.com/SubhashBose/TtyServe\n")
