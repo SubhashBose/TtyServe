@@ -63,9 +63,12 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 	connID := cl.RegConn(sess.ID, func() { conn.Close() })
 	defer cl.UnregConn(connID)
 
-	// Effective read-only for THIS viewer: the global flag, or a read-only
-	// share. The owner keeps write access regardless of a read-only share.
-	readOnly := s.cfg.Readonly || cl.AccessReadOnly(sess.ID)
+	// sharedReadOnly: this viewer joined via a read-only share, so an owner
+	// (or read-write viewer) holds authority over the terminal. readOnly:
+	// whether this viewer may send input at all — also true under the global
+	// readonly flag, which has no writer of its own.
+	sharedReadOnly := cl.AccessReadOnly(sess.ID)
+	readOnly := s.cfg.Readonly || sharedReadOnly
 
 	// Enforce per-session viewer cap.
 	if s.cfg.MaxClientsPerSession > 0 && term.SubscriberCount() > s.cfg.MaxClientsPerSession {
@@ -180,10 +183,11 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 				_, _ = term.Write(payload)
 			}
 		case msgResize:
-			// A read-only viewer must not reshape the shared terminal — a
-			// resize changes the PTY width for the owner and every other
-			// viewer. Read-write viewers may resize (shared control).
-			if readOnly {
+			// A read-only SHARE viewer must not reshape the terminal — that
+			// would change the PTY width for the owner and other viewers.
+			// The global readonly flag has no owner/writer, so there a
+			// viewer's own size drives the PTY as normal.
+			if sharedReadOnly {
 				break
 			}
 			var rp resizePayload
