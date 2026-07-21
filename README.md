@@ -2,13 +2,15 @@
   <img src="docs/asset/TtyServe.svg" alt="TtyServe" width="150">
 </h1>
 
-# TtyServe - The most advanced web terminal server
+# TtyServe - Advanced and modern web terminal server
 
 TtyServe is a persistent, multi-session, shareable web terminal server in Go — like [ttyd](https://github.com/tsl0922/ttyd),
 but sessions survive disconnects and each client can hold multiple terminals in a
 renameable tab bar. Users can share terminal with other authenticated users for readonly view or to work jointly with shared input.
 
-[!TtyServe Demo](docs/asset/demo.webm)
+<p align="center">
+  <img src="docs/asset/demo2.gif" width="800" />
+</p>
 
 ## Features
 
@@ -23,8 +25,8 @@ renameable tab bar. Users can share terminal with other authenticated users for 
   - `proxy_header` — sessions tied to the value of a header set by an
     authenticating reverse proxy (`proxy-header-name`, default`X-Forwarded-User`); like`user` mode but the proxy does the auth. Bind to`unix://` or`127.0.0.1` so the header can't be spoofed directly.`user` and`proxy_header` persistence modes survives different browser logins as well.
     Users with same login credentials will find terminal sessions persistent across browsers.
-- **Multiple sessions + tabs** (toggleable). Tab bar on**top** or**right**
-  (configurable).**Rename** a tab by double-clicking its title. Add/close tabs.
+- **Multiple sessions + tabs** (toggleable). Tab bar on **top** or **right**
+  (configurable). **Rename** a tab by double-clicking its title. Add/close tabs.
 - **Single-session mode** — flip`multi-session: false` for one terminal, no tabs.
 - **Persistence off** — set`session-persistence: false` for ttyd-style ephemeral
   terminals that die on disconnect.
@@ -71,6 +73,8 @@ ttyserve --upgrade
 ```
 
 Open http://localhost:7681 (default listen address:port).
+
+Tip: A reverse proxy can serve TtyServe at any arbitrary base-path (http://some-host/to/a/subpath/) without requiring additional configuration at TtyServe's end. It is ensured that all assets and cookies are portable to work from any base-path.
 
 ## Configuration
 
