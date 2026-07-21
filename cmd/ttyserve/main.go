@@ -73,7 +73,7 @@ func main() {
 	tabShowCwd := flag.Bool("tab-show-cwd", def.TabShowCwd, "include the working directory basename in auto tab titles")
 	tabShowPS1 := flag.Bool("tab-show-ps1", def.TabShowPS1, "title tabs from the shell's OSC 0/2 window title (overrides tab-show-psname/cwd)")
 	tabTitle := flag.String("tab-title", def.TabTitle, "fixed tab title, overrides all auto-titling")
-	showVersion := flag.BoolP("version", "v", false, "print version and exit")
+	showVersion := flag.BoolP("version", "V", false, "print version and exit")
 	doUpgrade := flag.Bool("upgrade", false, "self-upgrade the binary to the latest release and exit")
 
 	flag.Usage = func() {

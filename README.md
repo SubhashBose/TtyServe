@@ -1,8 +1,14 @@
-# TtyServe
+<h1 align="center">
+  <img src="docs/asset/TtyServe.svg" alt="TtyServe" width="150">
+</h1>
 
-A persistent, multi-session web terminal server in Go — like [ttyd](https://github.com/tsl0922/ttyd),
+# TtyServe - The most advanced web terminal server
+
+TtyServe is a persistent, multi-session, shareable web terminal server in Go — like [ttyd](https://github.com/tsl0922/ttyd),
 but sessions survive disconnects and each client can hold multiple terminals in a
-renameable tab bar.
+renameable tab bar. Users can share terminal with other authenticated users for readonly view or to work jointly with shared input.
+
+[!TtyServe Demo](docs/asset/demo.webm)
 
 ## Features
 
@@ -22,11 +28,12 @@ renameable tab bar.
 - **Single-session mode** — flip`multi-session: false` for one terminal, no tabs.
 - **Persistence off** — set`session-persistence: false` for ttyd-style ephemeral
   terminals that die on disconnect.
-- **Tab sharing** (opt-in, `allow-sharing`) — right-click a tab to copy a share
+- **Tab sharing** (opt-in,`allow-sharing`) — right-click a tab to copy a share
   link; another authenticated user opens it and the terminal joins their tab
   list, view-only or with control. Access persists across their reloads until
   the owner closes the terminal or revokes. Persistent modes only.
-- Inline graphics support - Sixel and iTerm inline protocol (IIP) graphics
+- **Inline graphics support** - Sixel and iTerm inline protocol (IIP) graphics
+- **Seamless clipboard** - linux like select-to-copy, middle-click to paste. Support for CLI programs (like modern AI coding harnesses) to set clipboard via OSC 52
 - Other options: read-only mode, shared viewers per session, custom
   command/args/env/working-dir, TLS, configurable title, ping interval, unix socket listen, socket permission, header value to env variable.
 
@@ -71,57 +78,56 @@ Every option is available both in the YAML config and as a CLI flag of the
 same name; flags override the file. `ttyserve --help` lists them all with
 defaults. See `config.example.yaml` for the annotated file with detailed information for each options. The available options are:
 
-| Option                                  | Meaning                                                                                                                                                                                                                                            |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `command` | what each terminal runs;`command` is a full shell-style line, e.g. `"/usr/bin/tmux new -A -s main"`.  |
-| `working-dir`                         | working directory for terminal command (default: server's working directory) |
-| `env`                                 |  `env` entries may contain `${header.NAME}`, expanded from the request header at spawn time (e.g. `USER=${header.X-Forwarded-User}`) |
-| `listen`                              | IP address, interface name, or `unix://<path>` socket (default: all interfaces)                                                                                                                                                                  |
-| `port`                                | TCP port (default 7681; ignored for unix sockets)                                                                                                                                                                                                  |
-| `socket-perm`                         | unix socket permissions,`mode[:user[:group]]` (e.g. `660` or `0660::www-data`); default: umask decides                                                                                                                                       |
-| `multi-session`                       | enable tabs / multiple terminals (default: true)                                                                                                                                                                                                   |
-| `max-sessions-per-client`             | cap on tabs per client, incl. accepted shares (0 = unlimited)                                                                                                                                                                                      |
-| `close-on-exit`                       | remove a session/tab when its command exits (default true); false keeps the tab and offers restart on Enter                                                                                                                                        |
-| `auto-respawn`                        | start a new session immediately when the last one ends (default false = will show empty tab bar / 'restart on Enter' when multi-session off)                                                                                                                                          |
-| `session-persistence`                 | master on/off for persistence (default: true)                                                                                                                                                                                                      |
-| `persistence-mode`                    | `user`, `short_term` or `proxy_header` (default: `short_term`)                                                                                                                                                                             |
-| `idle-timeout`                        | short-term session lifetime when disconnected (default: 5m)                                                                                                                                                                                        |
-| `users`                               | list of comma-separated `name:password` pairs for `user` mode; with persistence off they act as a plain access gate                                                                                                                            |
-| `auth-realm`                          | HTTP basic-auth realm shown in the browser's login prompt (default `ttyserve`)                                                                                                                                                                    |
-| `proxy-header-name`                   | header carrying the identity in `proxy_header` mode (default `X-Forwarded-User`)                                                                                                                                                               |
-| `scrollback-bytes`                    | server-side replay buffer per session (default: 262144)                                                                                                                                                                                            |
-| `allow-sharing`                       | let a user share a tab with another authenticated user via a link (default false), works in persistent modes only                                                                                                                                            |
-| `max-clients-per-session`             | shared-viewer cap (default: 0 = unlimited)                                                                                                                                                                                                                  |
-| `cookie-name`                         | short-term session cookie name (default `ttyserve_session`); change to run multiple instances on one host                                                                                                                                          |
-| `cookie-secure`                       | mark the session cookie `Secure` — HTTPS only (default false; set true behind TLS)                                                                                                                                                                |
-| `allow-origins`                       | extra websocket origins beyond same-host;`["*"]` = any                                                                                                                                                                                           |
-| `tls-cert-file` / `tls-key-file`    | path of tls cert/key files, both needed, this enables TLS (applies to TCP and unix-socket listeners alike)                                                                                                                                                                                        |
-| `readonly`                            | `true` = read-only terminals, no client input (default: false)                                                                                                                                                                                                   |
-| `url-arg`               | URL query params become command args (security-sensitive). e.g., `/?arg1&arg2=5` -> runs as `command arg1 arg2=5`                                                            |
-| `url-env`               | URL query params become command env vars (security-sensitive). e.g., `/?arg1&arg2=5` -> sets ENV var as `arg1= arg2=5` for the command           |
-| `ping-interval`                       | websocket keepalive ping period (default 20s); dead peers are reclaimed after 3× this                                                                                                                                                              |
-| `font-size`                           | terminal font size in px (default 14)                                                                                                                                                                                                              |
-| `dom-renderer`                        | DOM text rendering instead of canvas — use incase of any GPU blanking issue (default false)                                                                                                                                                       |
-| `enable-graphics`                     | inline images via sixel + iTerm2 protocol (default true)                                                                                                                                                                                           |
-| `disable-hyperlink`                   | `true` = links in output are not clickable (default false)                                                                                                                                                                                       |
-| `middleclick-paste`                   | paste clipboard on middle click (default true)                                                                                                                                                                                                     |
-| `clipboard-write`                     | let terminal programs set the system clipboard (reads ignored) via OSC 52 — tmux copy, vim `+clipboard`, ai coding harnesses, etc. (default true)                                                                                                             |
-| `title`                               | browser page title (default `TtyServe`)                                                                                                                                                                                                            |
-| `favicon`                             | custom icon: file path or base64 encoded `data:` URI (default: built-in)                                                                                                                                                                         |
-| `tab-bar-position`                    | `top` or `right`                                                                                                                                                                                                                               |
-| `tab-show-psname` / `tab-show-cwd`  | auto tab title parts: foreground process name / terminal's current-directory (default true for both)                                                                                                                                                                                            |
-| `tab-show-ps1`                        | auto title tabs from the shell's window title (default false), overrides `tab-show-psname` / `tab-show-cwd` titling                                                                                                                                                                                        |
-| `tab-title`                           | fixed tab title, disables all auto-tab-titling                                                                                                                                                                                                             |
+| Option                                 | Meaning                                                                                                                                              |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `command`                            | what each terminal runs;`command` is a full shell-style line, e.g. `"/usr/bin/tmux new -A -s main"`.                                             |
+| `working-dir`                        | working directory for terminal command (default: server's working directory)                                                                         |
+| `env`                                | `env` entries may contain `${header.NAME}`, expanded from the request header at spawn time (e.g. `USER=${header.X-Forwarded-User}`)            |
+| `listen`                             | IP address, interface name, or `unix://<path>` socket (default: all interfaces)                                                                    |
+| `port`                               | TCP port (default 7681; ignored for unix sockets)                                                                                                    |
+| `socket-perm`                        | unix socket permissions,`mode[:user[:group]]` (e.g. `660` or `0660::www-data`); default: umask decides                                         |
+| `multi-session`                      | enable tabs / multiple terminals (default: true)                                                                                                     |
+| `max-sessions-per-client`            | cap on tabs per client, incl. accepted shares (0 = unlimited)                                                                                        |
+| `close-on-exit`                      | remove a session/tab when its command exits (default true); false keeps the tab and offers restart on Enter                                          |
+| `auto-respawn`                       | start a new session immediately when the last one ends (default false = will show empty tab bar / 'restart on Enter' when multi-session off)         |
+| `session-persistence`                | master on/off for persistence (default: true)                                                                                                        |
+| `persistence-mode`                   | `user`, `short_term` or `proxy_header` (default: `short_term`)                                                                               |
+| `idle-timeout`                       | short-term session lifetime when disconnected (default: 5m)                                                                                          |
+| `users`                              | list of comma-separated `name:password` pairs for `user` mode; with persistence off they act as a plain access gate                              |
+| `auth-realm`                         | HTTP basic-auth realm shown in the browser's login prompt (default `ttyserve`)                                                                     |
+| `proxy-header-name`                  | header carrying the identity in `proxy_header` mode (default `X-Forwarded-User`)                                                                 |
+| `scrollback-bytes`                   | server-side replay buffer per session (default: 262144)                                                                                              |
+| `allow-sharing`                      | let a user share a tab with another authenticated user via a link (default false), works in persistent modes only                                    |
+| `max-clients-per-session`            | shared-viewer cap (default: 0 = unlimited)                                                                                                           |
+| `cookie-name`                        | short-term session cookie name (default `ttyserve_session`); change to run multiple instances on one host                                          |
+| `cookie-secure`                      | mark the session cookie `Secure` — HTTPS only (default false; set true behind TLS)                                                                |
+| `allow-origins`                      | extra websocket origins beyond same-host;`["*"]` = any                                                                                             |
+| `tls-cert-file` / `tls-key-file`   | path of tls cert/key files, both needed, this enables TLS (applies to TCP and unix-socket listeners alike)                                           |
+| `readonly`                           | `true` = read-only terminals, no client input (default: false)                                                                                     |
+| `url-arg`                            | URL query params become command args (security-sensitive). e.g.,`/?arg1&arg2=5` -> runs as `command arg1 arg2=5`                                 |
+| `url-env`                            | URL query params become command env vars (security-sensitive). e.g.,`/?arg1&arg2=5` -> sets ENV var as `arg1= arg2=5` for the command            |
+| `ping-interval`                      | websocket keepalive ping period (default 20s); dead peers are reclaimed after 3× this                                                               |
+| `font-size`                          | terminal font size in px (default 14)                                                                                                                |
+| `dom-renderer`                       | DOM text rendering instead of canvas — use incase of any GPU blanking issue (default false)                                                         |
+| `enable-graphics`                    | inline images via sixel + iTerm2 protocol (default true)                                                                                             |
+| `disable-hyperlink`                  | `true` = links in output are not clickable (default false)                                                                                         |
+| `middleclick-paste`                  | paste clipboard on middle click (default true)                                                                                                       |
+| `clipboard-write`                    | let terminal programs set the system clipboard (reads ignored) via OSC 52 — tmux copy, vim `+clipboard`, ai coding harnesses, etc. (default true) |
+| `title`                              | browser page title (default `TtyServe`)                                                                                                            |
+| `favicon`                            | custom icon: file path or base64 encoded `data:` URI (default: built-in)                                                                           |
+| `tab-bar-position`                   | `top` or `right`                                                                                                                                 |
+| `tab-show-psname` / `tab-show-cwd` | auto tab title parts: foreground process name / terminal's current-directory (default true for both)                                                 |
+| `tab-show-ps1`                       | auto title tabs from the shell's window title (default false), overrides `tab-show-psname` / `tab-show-cwd` titling                              |
+| `tab-title`                          | fixed tab title, disables all auto-tab-titling                                                                                                       |
 
 Other CLI exclusive flags are:
 
-| flag | Meaning |
-|------|---------|
-| -C, --config | path to YAML config file to load configuration options |
-| -V, --version | Print the version and build date of TtyServe binary |
-| --upgrade | Self-update the binary to latest release |
-| -h, --help | Print CLI help with all options |
-
+| flag          | Meaning                                                |
+| ------------- | ------------------------------------------------------ |
+| -C, --config  | path to YAML config file to load configuration options |
+| -V, --version | Print the version and build date of TtyServe binary    |
+| --upgrade     | Self-update the binary to latest release               |
+| -h, --help    | Print CLI help with all options                        |
 
 The boolean configuration options (true/false) can be set in config YAML file, and/or through CLI flags. Boolean option that are `true` by default can be set to false in CLI as `--option=false`.
 
@@ -172,10 +178,10 @@ Enable with `allow-sharing: true` (persistent modes only — `user`,
 Once enabled, **right-click any tab you own → Share…** to open the share
 dialog. You choose:
 
-- **Access** — *View only* (the other person watches, cannot type) or *Allow
+- **Access** —*View only* (the other person watches, cannot type) or*Allow
   control* (they can type into the same shell as you).
 - **Link expires** — Never, or a time window (1 hour up to 7 days). This limits
-  how long the link can be *accepted*; access already granted keeps working.
+  how long the link can be*accepted*; access already granted keeps working.
 - **One-time** — the link stops working after the first person accepts it.
 
 Click **Create link** and the shareable link is copied to your clipboard. Send
@@ -186,15 +192,15 @@ stop sharing or the terminal closes.
 
 **What you'll see in the interface:**
 
-- A tab's **share icon appears only once someone has actually joined** — a link
+- A tab's**share icon appears only once someone has actually joined** — a link
   that exists but hasn't been accepted yet does not badge the tab.
-- The right-click menu shows **Sharing… (N users)** once people have joined, so
+- The right-click menu shows**Sharing… (N users)** once people have joined, so
   you can tell at a glance how many are connected.
 - **Stop sharing** revokes everything at once: it invalidates all outstanding
   links (even ones nobody accepted yet) and immediately disconnects everyone
   currently viewing. It appears as soon as a link exists, not only after
   someone joins. Your own terminal keeps running.
-- Shared-in tabs (terminals shared *to* you) show an eye icon for view-only or a
+- Shared-in tabs (terminals shared*to* you) show an eye icon for view-only or a
   link icon for control, and you can't rename them (the title belongs to the
   owner).
 
@@ -206,7 +212,7 @@ one-time links when you just want someone to watch.
 
 When share is readonly, the terminal display width is determined by only owner's browser window size. However, if share is read+write (allow control) share, the terminal width can change according to both owner and shared users browser window size (whoever last renders the page or resizes the window).
 
-Note: When displaying full screen terminal programs when sharing, like VI or even top, it is recommended to keep the main input user's browser window smaller than all viewers browser windows. This is because terminal display width is determined by input/main user, and if viewer widows is smaller, then texts would overflow in viewer's terminal, and would cause undesireable display.  
+Note: When displaying full screen terminal programs when sharing, like VI or even top, it is recommended to keep the main input user's browser window smaller than all viewers browser windows. This is because terminal display width is determined by input/main user, and if viewer widows is smaller, then texts would overflow in viewer's terminal, and would cause undesireable display.
 
 ## Robustness & protocol details
 

@@ -33,6 +33,18 @@ type resizePayload struct {
 }
 
 // serveWS attaches a websocket to a session: replays scrollback, then streams.
+// closeWS sends a WebSocket close frame, then closes the connection. The
+// frame travels in-band (proxies forward it like any data frame), so the
+// browser fires onclose immediately instead of waiting to detect the raw TCP
+// teardown — which lags through proxies. Harmless if the conn is already
+// closing.
+func closeWS(conn *websocket.Conn) {
+	_ = conn.WriteControl(websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+		time.Now().Add(2*time.Second))
+	_ = conn.Close()
+}
+
 func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session.Session) {
 	term := sess.Term()
 
@@ -40,7 +52,7 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 	if !ok {
 		// Terminal already gone; tell the client so it stops retrying.
 		_ = conn.WriteMessage(websocket.BinaryMessage, []byte{srvExit})
-		conn.Close()
+		closeWS(conn)
 		return
 	}
 	// Ephemeral mode: the session dies with its socket (no reaper runs). Once
@@ -60,7 +72,7 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 	defer s.mgr.ConnDetached(cl)
 
 	// Register this connection so a revoked share can force it closed.
-	connID := cl.RegConn(sess.ID, func() { conn.Close() })
+	connID := cl.RegConn(sess.ID, func() { closeWS(conn) })
 	defer cl.UnregConn(connID)
 
 	// sharedReadOnly: this viewer joined via a read-only share, so an owner
@@ -72,7 +84,7 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 
 	// Enforce per-session viewer cap.
 	if s.cfg.MaxClientsPerSession > 0 && term.SubscriberCount() > s.cfg.MaxClientsPerSession {
-		conn.Close()
+		closeWS(conn)
 		return
 	}
 
@@ -119,7 +131,7 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 	// concurrent writer on the connection.
 	if len(snapshot) > 0 {
 		if err := sendFrame(srvReplay, snapshot); err != nil {
-			conn.Close()
+			closeWS(conn)
 			return
 		}
 	}
@@ -133,7 +145,7 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 	// (idle accounting, ephemeral discard) isn't delayed until the next ping.
 	go func() {
 		defer close(done)
-		defer conn.Close()
+		defer closeWS(conn) // in-band close frame -> prompt onclose
 		ping := time.NewTicker(s.cfg.PingInterval)
 		defer ping.Stop()
 		for {

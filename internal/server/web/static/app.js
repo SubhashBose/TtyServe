@@ -258,6 +258,9 @@
         });
       } else if (data[0] === S_EXIT) {
         entry.exited = true;
+        // No need to close our side here: the server sends a WebSocket close
+        // frame right after 'e' (see closeWS in ws.go), so onclose — which
+        // shows "[session ended]" — fires promptly in-band on its own.
       }
     };
 
@@ -294,9 +297,37 @@
         }
         return;
       }
-      // If the server signalled exit, or on any close, verify the session
-      // still exists before retrying — otherwise we'd reconnect forever to a
-      // session whose shell has exited.
+      // Fast path: we received the exit signal ('e'), so the command exited
+      // and the outcome is fully determined by config — no need to ask the
+      // server whether the session survives. Show the message immediately;
+      // the GET /sessions round-trip here is what made this laggier than ttyd
+      // (especially through a proxy).
+      if (entry.exited) {
+        if (!cfg.closeOnExit) {
+          // Session kept for restart; Enter respawns it in place.
+          entry.awaitRestart = true;
+          entry.term.write("\r\n\x1b[33m[session ended]\x1b[0m — press \x1b[1mEnter\x1b[0m to restart\r\n");
+          showStatus("session ended — press Enter to restart");
+        } else if (!cfg.multiSession && !cfg.autoRespawn) {
+          // Session removed; single-session offers restart — Enter spawns a
+          // fresh one (sessionGone drives restartSession).
+          entry.exited = false;
+          entry.awaitRestart = true;
+          entry.sessionGone = true;
+          entry.term.write("\r\n\x1b[33m[session ended]\x1b[0m — press \x1b[1mEnter\x1b[0m to restart\r\n");
+          showStatus("session ended — press Enter to restart");
+        } else {
+          // Session removed; close the tab (multi-session, or auto-respawn
+          // spawns a replacement via removeTabUI).
+          entry.term.write("\r\n\x1b[33m[session ended]\x1b[0m\r\n");
+          showStatus("session ended");
+          setTimeout(() => removeTabUI(sessionId), 600);
+        }
+        return;
+      }
+      // No exit signal — a plain disconnect. Now the server DOES need asking:
+      // is the session still there (reconnectable blip) or gone (server
+      // restart / idle reap → spawn a replacement)?
       let alive;
       try {
         // Bounded: a hung check on a dead network must not stall the
@@ -304,49 +335,21 @@
         const list = await api("GET", "sessions", undefined, 8000);
         alive = list.some((s) => s.id === sessionId);
       } catch (e) {
-        // Network down: trust the exit signal if we got one, else keep retrying.
-        alive = !entry.exited;
+        alive = true; // network down, no exit signal: assume alive, keep retrying
       }
       if (!alive) {
-        if (!entry.exited) {
-          // The session vanished without the server signalling a command
-          // exit — a server restart or idle reap made our tab stale. Treat
-          // it like a fresh page load: spawn a replacement terminal.
-          if (cfg.multiSession) {
-            removeTabUI(sessionId, true);
-          } else {
-            entry.awaitRestart = true; // Enter retries if the spawn fails
-            entry.sessionGone = true;
-            restartSession(entry);
-          }
-          return;
-        }
-        if (!cfg.multiSession && !cfg.autoRespawn) {
-          // Single-session mode: keep the dead pane and offer a restart.
-          // The session itself is gone server-side, so Enter creates a
-          // fresh one in place (see restartSession).
-          entry.exited = false;
-          entry.awaitRestart = true;
+        // The session vanished without a command-exit signal — a server
+        // restart or idle reap made our tab stale. Treat it like a fresh
+        // page load: spawn a replacement terminal.
+        if (cfg.multiSession) {
+          removeTabUI(sessionId, true);
+        } else {
+          entry.awaitRestart = true; // Enter retries if the spawn fails
           entry.sessionGone = true;
-          updateTabState(entry);
-          entry.term.write("\r\n\x1b[33m[session ended]\x1b[0m — press \x1b[1mEnter\x1b[0m to restart\r\n");
-          showStatus("session ended — press Enter to restart");
-          return;
+          restartSession(entry);
         }
-        entry.term.write("\r\n\x1b[33m[session ended]\x1b[0m\r\n");
-        showStatus("session ended");
-        setTimeout(() => removeTabUI(sessionId), 600);
         return;
       }
-      if (entry.exited) {
-        // Command exited but the session is kept (close_on_exit: false).
-        // Stop reconnecting and offer a restart instead.
-        entry.awaitRestart = true;
-        entry.term.write("\r\n\x1b[33m[session ended]\x1b[0m — press \x1b[1mEnter\x1b[0m to restart\r\n");
-        showStatus("session ended — press Enter to restart");
-        return;
-      }
-      entry.exited = false;
       refreshConnStatus();
       entry._backoff = Math.min((entry._backoff || 500) * 1.6, 5000);
       entry.reconnectTimer = setTimeout(() => {
