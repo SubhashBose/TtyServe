@@ -117,6 +117,7 @@ defaults. See `config.example.yaml` for the annotated file with detailed informa
 | `disable-hyperlink`                  | `true` = links in output are not clickable (default false)                                                                                         |
 | `middleclick-paste`                  | paste clipboard on middle click (default true)                                                                                                       |
 | `clipboard-write`                    | let terminal programs set the system clipboard (reads ignored) via OSC 52 — tmux copy, vim `+clipboard`, ai coding harnesses, etc. (default true) |
+| `bell`                               | terminal bell (BEL / `\a`): `none`, `sound`, `visual`, or `both` (default `sound`)                                                                  |
 | `title`                              | browser page title (default `TtyServe`)                                                                                                            |
 | `favicon`                            | custom icon: file path or base64 encoded `data:` URI (default: built-in)                                                                           |
 | `tab-bar-position`                   | `top` or `right`                                                                                                                                 |
@@ -220,10 +221,11 @@ Note: When displaying full screen terminal programs when sharing, like VI or eve
 
 ## Robustness & protocol details
 
-- **Slow-client isolation** — the PTY read loop never blocks on a consumer.
-  Each websocket has a coalescing output buffer (capped at 1 MiB); a client
-  that can't keep up is dropped and simply repaints from scrollback on
-  reconnect. One dead viewer can never stall a shared session.
+- **Slow-client isolation** — the PTY read loop never blocks on a consumer, so
+  one slow or dead viewer can never pause the program or stall a shared session.
+  A client that falls too far behind (its 1 MiB output buffer overflows) is
+  repainted in place from the current scrollback, not dropped — see
+  [Handling output floods](#handling-output-floods).
 - **Sliding cookie expiration** — in short-term mode the cookie is refreshed on
   every request, so an actively-used browser never loses its identity; only
   idle clients age out (enforced server-side by the reaper regardless).
@@ -240,6 +242,32 @@ Note: When displaying full screen terminal programs when sharing, like VI or eve
   single-session offers restart on Enter; set`auto-respawn: true` for the
   old immediately-start-a-new-one behavior.
 - `GET /healthz` returns 200 without auth, for load balancers and monitors.
+
+### Handling output floods
+
+When a command dumps output faster than a client can render it (`yes`,
+`cat huge.log`, a chatty build), something has to give — the program or the
+viewer:
+
+- **ttyd** and **VS Code's terminal** apply *backpressure*: they stop reading
+  the PTY until the client catches up, the kernel tty buffer fills, and the
+  program's `write()` blocks — so the program runs no faster than the (slowest)
+  viewer. That's ideal when a terminal has exactly one viewer.
+- **TtyServe deliberately doesn't.** Its sessions are **persistent, detachable,
+  and shareable**: a session must keep running at full speed with *zero* clients
+  attached (a detached build), and one slow viewer must never throttle the shell
+  for the owner or other viewers. So the PTY read loop is decoupled from clients
+  and always drains into the scrollback ring.
+
+Instead of pausing the program, TtyServe pauses nothing. When a client's 1 MiB
+buffer overflows, its stale backlog is discarded and it is **repainted in place**
+from the current scrollback (an in-band full-reset replay frame) — no reconnect,
+no dropped tab, and no `write()` ever blocked. During a sustained flood the
+viewer just sees periodic repaints of the live screen — all a human can follow
+at that rate anyway — and Ctrl-C still reaches the shell throughout. If a link
+is so slow that even one frame can't be sent within the write deadline, that
+connection falls back to the normal disconnect/reconnect path, without ever
+affecting the program or other viewers.
 
 ## Security notes
 

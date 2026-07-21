@@ -66,6 +66,7 @@ func main() {
 	disableHyperlink := flag.Bool("disable-hyperlink", def.DisableHyperlink, "turn off clickable links in the terminal")
 	middleclickPaste := flag.Bool("middleclick-paste", def.MiddleclickPaste, "paste clipboard on middle click")
 	clipboardWrite := flag.Bool("clipboard-write", def.ClipboardWrite, "let terminal programs set the system clipboard via OSC 52 (tmux, vim, ai-harnesses, etc.)")
+	bell := flag.String("bell", def.Bell, "terminal bell (BEL / \\a): 'none', 'sound', 'visual' or 'both'")
 	title := flag.StringP("title", "t", def.Title, "browser page title")
 	favicon := flag.String("favicon", def.Favicon, "custom favicon: `file` path or data: URI (default: built-in icon)")
 	tabBarPosition := flag.String("tab-bar-position", def.TabBarPosition, "tab bar `position`: 'top' or 'right'")
@@ -183,6 +184,8 @@ func main() {
 			cfg.MiddleclickPaste = *middleclickPaste
 		case "clipboard-write":
 			cfg.ClipboardWrite = *clipboardWrite
+		case "bell":
+			cfg.Bell = *bell
 		case "title":
 			cfg.Title = *title
 		case "favicon":

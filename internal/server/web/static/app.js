@@ -155,7 +155,50 @@
         });
       } catch (e) {}
     }
+    // Terminal bell (BEL / \a): audible beep and/or a brief visual flash.
+    if (cfg.bell && cfg.bell !== "none" && term.onBell) {
+      try { term.onBell(() => ringBell(entryForTerm(term))); } catch (e) {}
+    }
     return { term, fit };
+  }
+
+  // --- Terminal bell -------------------------------------------------------
+  // Audio is synthesized (no asset) via Web Audio. Browsers gate audio behind
+  // a user gesture, so the context is created/resumed on the first keydown or
+  // pointer interaction (which any command that rings a bell requires anyway).
+  let audioCtx = null;
+  function ensureAudio() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch (e) { return; }
+    }
+    if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+  }
+  window.addEventListener("keydown", ensureAudio, { once: true });
+  window.addEventListener("pointerdown", ensureAudio, { once: true });
+
+  function beep() {
+    ensureAudio();
+    if (!audioCtx || audioCtx.state !== "running") return;
+    const t = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "square";
+    osc.frequency.value = 750;
+    gain.gain.setValueAtTime(0.06, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(t);
+    osc.stop(t + 0.16);
+  }
+
+  function ringBell(entry) {
+    if (cfg.bell === "sound" || cfg.bell === "both") beep();
+    if ((cfg.bell === "visual" || cfg.bell === "both") && entry) {
+      entry.pane.classList.add("bell-flash");
+      clearTimeout(entry._bellTimer);
+      entry._bellTimer = setTimeout(() => entry.pane.classList.remove("bell-flash"), 150);
+    }
   }
 
   // Decode base64 to a UTF-8 string (atob yields Latin-1 bytes).
@@ -466,9 +509,13 @@
 
     if (!cfg.readonly && !readOnly) {
       term.onData((d) => {
-        // Drop the terminal's own replies to queries embedded in a
-        // scrollback repaint; only real input/live replies reach the PTY.
-        if (entry.replaying) return;
+        // While a scrollback repaint parses, drop the terminal's OWN auto
+        // replies to queries embedded in it (DA / cursor-position / color) —
+        // they'd reach the shell as phantom input. Those always start with
+        // ESC; real typing (Ctrl-C, text, Enter) must still get through, since
+        // an overflow repaint can fire mid-stream while the user is trying to
+        // interrupt a flood.
+        if (entry.replaying && d.charCodeAt(0) === 0x1b) return;
         if (entry.awaitRestart) {
           if (d === "\r") restartSession(entry);
           return;

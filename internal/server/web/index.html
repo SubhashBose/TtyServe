@@ -112,6 +112,11 @@
      corners of an embedding frame. The fit addon measures this element, so
      the grid fits exactly inside — no reliance on CSS-padding subtraction. */
   .term-inner { position: absolute; top: 5px; left: 5px; right: 5px; bottom: 8px; }
+  /* Visual bell: a brief translucent flash over the terminal. */
+  .term-pane.bell-flash::after { content: ""; position: absolute; inset: 0;
+    pointer-events: none; background: rgba(255,255,255,.16); z-index: 5;
+    animation: bellflash .15s ease-out; }
+  @keyframes bellflash { from { opacity: 1; } to { opacity: 0; } }
 
   #status { position: absolute; bottom: 8px; right: 12px; font-size: 12px;
     background: rgba(0,0,0,.6); padding: 3px 8px; border-radius: 4px;
@@ -140,6 +145,7 @@
     hyperlinks: {{not .DisableHyperlink}},
     middleclickPaste: {{.MiddleclickPaste}},
     clipboardWrite: {{.ClipboardWrite}},
+    bell: "{{.Bell}}",
     tabShowPS1: {{.TabShowPS1}},
     autoRespawn: {{.AutoRespawn}},
     allowSharing: {{.AllowSharing}},

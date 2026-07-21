@@ -8,8 +8,8 @@ import (
 // TestSlowSubscriberDoesNotBlockOthers reproduces the pre-fix deadlock: one
 // subscriber that never drains, while the PTY floods output. Previously the
 // read loop would block on the full channel while holding the terminal mutex,
-// wedging every other subscriber and Close(). Now the slow one is dropped and
-// the healthy one keeps receiving.
+// wedging every other subscriber and Close(). Now the slow one is resynced
+// (its backlog dropped, non-blocking) and the healthy one keeps receiving.
 func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 	term, err := New(Options{
 		Command:         "/bin/sh",
@@ -40,7 +40,7 @@ func TestSlowSubscriberDoesNotBlockOthers(t *testing.T) {
 	for got < 4_000_000 {
 		select {
 		case <-subFast.Notify():
-			data, open := subFast.Take()
+			data, open, _ := subFast.Take()
 			got += len(data)
 			if !open && got < 4_000_000 {
 				t.Fatalf("fast subscriber closed early after %d bytes", got)

@@ -177,6 +177,11 @@ type Config struct {
 	// to block clipboard writes from terminal output entirely.
 	ClipboardWrite bool `yaml:"clipboard-write"`
 
+	// Bell is how the terminal bell (BEL / \a) is signalled in the browser:
+	// "none", "sound" (a short synthesized beep), "visual" (a brief flash),
+	// or "both".
+	Bell string `yaml:"bell"`
+
 	// DOMRenderer uses xterm's DOM text renderer instead of the canvas one.
 	// Slower scrolling, but immune to mobile GPU canvas blanking (Android
 	// Chromium can black out the text canvas when sixel images allocate
@@ -257,6 +262,7 @@ func Default() Config {
 		DisableHyperlink:     false,
 		MiddleclickPaste:     true,
 		ClipboardWrite:       true,
+		Bell:                 "sound",
 		Title:                "TtyServe",
 		CloseOnExit:          true,
 		AutoRespawn:          false,
@@ -310,6 +316,13 @@ func (c *Config) Validate() error {
 		c.TabBarPosition = "top"
 	default:
 		return fmt.Errorf("tab-bar-position must be 'top' or 'right', got %q", c.TabBarPosition)
+	}
+	switch c.Bell {
+	case "none", "sound", "visual", "both":
+	case "":
+		c.Bell = "sound"
+	default:
+		return fmt.Errorf("bell must be 'none', 'sound', 'visual' or 'both', got %q", c.Bell)
 	}
 	if c.SessionPersistence {
 		switch c.PersistenceMode {

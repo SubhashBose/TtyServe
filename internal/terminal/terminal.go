@@ -11,10 +11,17 @@ import (
 )
 
 // maxSubscriberBuffer caps how many bytes may queue for a single slow
-// subscriber before it is forcibly dropped. The PTY read loop never blocks on
-// a consumer; a dropped client simply reconnects and is repainted from the
-// scrollback ring, so no correctness is lost.
+// subscriber before it is resynced. The PTY read loop never blocks on a
+// consumer; one that falls this far behind has its stale backlog discarded and
+// is repainted from the current scrollback snapshot instead (see resyncTo), so
+// the program never pauses and other viewers are unaffected.
 const maxSubscriberBuffer = 1 << 20 // 1 MiB
+
+// risReset is ESC c (RIS, "reset to initial state") — a full terminal reset.
+// It prefixes an overflow resync so the client repaints from a clean slate
+// in-band, ordered correctly with surrounding output, without an out-of-band
+// terminal.reset() that could race the async write queue mid-stream.
+var risReset = []byte{0x1b, 'c'}
 
 // Subscriber is one attached output consumer. Output chunks are coalesced
 // into an internal buffer and the consumer is signalled via Notify; this
@@ -23,6 +30,7 @@ type Subscriber struct {
 	mu     sync.Mutex
 	buf    []byte
 	closed bool
+	resync bool // next Take is an overflow resync: send it as a repaint, not a stream chunk
 	notify chan struct{}
 }
 
@@ -33,18 +41,23 @@ func newSubscriber() *Subscriber {
 // Notify signals whenever output is pending or the subscriber has closed.
 func (s *Subscriber) Notify() <-chan struct{} { return s.notify }
 
-// Take returns all pending output and whether the subscriber is still open.
-// A final call may return both remaining data and open == false.
-func (s *Subscriber) Take() (data []byte, open bool) {
+// Take returns all pending output, whether the subscriber is still open, and
+// whether this batch is an overflow resync (a repaint the writer must send as
+// a replay frame, not a stream chunk). A final call may return both remaining
+// data and open == false.
+func (s *Subscriber) Take() (data []byte, open, resync bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	data = s.buf
 	s.buf = nil
-	return data, !s.closed
+	resync = s.resync
+	s.resync = false
+	return data, !s.closed, resync
 }
 
 // push appends output without ever blocking; reports false on overflow,
-// meaning the subscriber is too slow and should be dropped.
+// meaning the subscriber is too far behind and must be resynced (its stale
+// backlog dropped and replaced with a fresh snapshot — see resyncTo).
 func (s *Subscriber) push(p []byte) bool {
 	s.mu.Lock()
 	if s.closed {
@@ -68,6 +81,27 @@ func (s *Subscriber) close() {
 		return
 	}
 	s.closed = true
+	s.mu.Unlock()
+	s.signal()
+}
+
+// resyncTo discards the subscriber's stale backlog and replaces it with a full
+// repaint (RIS reset + a fresh scrollback snapshot), flagged so the writer
+// sends it as a replay frame. Used when the consumer fell too far behind:
+// rather than dropping it (which forces a reconnect) or blocking the producer
+// (which would stall the program and every other viewer, à la ttyd), the
+// client is simply jumped to the current screen. The program never pauses.
+func (s *Subscriber) resyncTo(snapshot []byte) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	buf := make([]byte, 0, len(risReset)+len(snapshot))
+	buf = append(buf, risReset...)
+	buf = append(buf, snapshot...)
+	s.buf = buf
+	s.resync = true
 	s.mu.Unlock()
 	s.signal()
 }
@@ -179,7 +213,8 @@ func (t *Terminal) readLoop() {
 			if t.trackCwd {
 				cwd, cwdOK = t.osc7.feed(chunk)
 			}
-			var dropped []*Subscriber
+			var behind []*Subscriber
+			var snapshot []byte
 			t.mu.Lock()
 			t.ring.Write(chunk)
 			if t.trackCwd {
@@ -188,15 +223,21 @@ func (t *Terminal) readLoop() {
 					t.reportedCwd = cwd
 				}
 			}
-			for id, sub := range t.subscribers {
+			for _, sub := range t.subscribers {
 				if !sub.push(chunk) {
-					delete(t.subscribers, id)
-					dropped = append(dropped, sub)
+					// Too far behind to stream to. Snapshot the ring (which
+					// already includes this chunk) once and repaint each such
+					// consumer from it — the subscriber stays attached, so the
+					// program is never paused and no reconnect is forced.
+					if snapshot == nil {
+						snapshot = t.ring.Snapshot()
+					}
+					behind = append(behind, sub)
 				}
 			}
 			t.mu.Unlock()
-			for _, sub := range dropped {
-				sub.close()
+			for _, sub := range behind {
+				sub.resyncTo(snapshot)
 			}
 		}
 		if err != nil {

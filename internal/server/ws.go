@@ -157,13 +157,24 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 					return
 				}
 			case <-sub.Notify():
-				chunk, open := sub.Take()
-				if len(chunk) > 0 {
+				chunk, open, resync := sub.Take()
+				if resync {
+					// The consumer fell too far behind: repaint it from the
+					// current scrollback instead of streaming stale bytes. Sent
+					// as a replay frame so the client resets and repaints and
+					// its query replies stay gated. The session stays live and
+					// full-speed — no pause, no reconnect, no exit signal.
+					if err := sendFrame(srvReplay, chunk); err != nil {
+						return
+					}
+				} else if len(chunk) > 0 {
 					if err := sendFrame(srvOutput, chunk); err != nil {
 						return
 					}
 				}
 				if !open {
+					// The subscriber only closes on a genuine session end (an
+					// overflow resyncs instead), so this is always a real exit.
 					_ = sendFrame(srvExit, nil)
 					return
 				}

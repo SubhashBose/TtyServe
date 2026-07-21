@@ -95,6 +95,24 @@ func TestValidateOptionInteractions(t *testing.T) {
 	if !cfg.Readonly {
 		t.Error("Validate must not reset Readonly")
 	}
+
+	for _, v := range []string{"none", "sound", "visual", "both"} {
+		cfg = Default()
+		cfg.Bell = v
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate: bell %q rejected: %v", v, err)
+		}
+	}
+	cfg = Default()
+	cfg.Bell = ""
+	if err := cfg.Validate(); err != nil || cfg.Bell != "sound" {
+		t.Errorf("Validate: empty bell should default to sound, got %q err %v", cfg.Bell, err)
+	}
+	cfg = Default()
+	cfg.Bell = "loud"
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate: invalid bell should be rejected")
+	}
 }
 
 func TestParseSocketPerm(t *testing.T) {
