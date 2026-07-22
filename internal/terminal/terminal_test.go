@@ -32,7 +32,7 @@ func TestRingZeroCap(t *testing.T) {
 }
 
 func TestSubscriberCoalesceAndClose(t *testing.T) {
-	s := newSubscriber()
+	s := newSubscriber(maxSubscriberBuffer)
 	if !s.push([]byte("hello ")) || !s.push([]byte("world")) {
 		t.Fatal("push failed unexpectedly")
 	}
@@ -56,7 +56,7 @@ func TestSubscriberCoalesceAndClose(t *testing.T) {
 }
 
 func TestSubscriberOverflowReportsDrop(t *testing.T) {
-	s := newSubscriber()
+	s := newSubscriber(maxSubscriberBuffer)
 	big := []byte(strings.Repeat("x", maxSubscriberBuffer))
 	if !s.push(big) {
 		t.Fatal("filling to cap should succeed")
@@ -77,7 +77,7 @@ func TestSubscriberOverflowReportsDrop(t *testing.T) {
 // as a replay frame. This is option B — the program is never paused and a live
 // terminal is never falsely closed (the `yes`-firehose bug).
 func TestSubscriberResync(t *testing.T) {
-	s := newSubscriber()
+	s := newSubscriber(maxSubscriberBuffer)
 	s.push([]byte("stale-backlog")) // never drained by the slow consumer
 	s.resyncTo([]byte("SNAPSHOT"))
 	<-s.Notify()
@@ -102,5 +102,21 @@ func TestSubscriberResync(t *testing.T) {
 	// The flag is one-shot: the following Take is an ordinary stream batch.
 	if _, _, resync2 := s.Take(); resync2 {
 		t.Fatal("resync flag must clear after one Take")
+	}
+}
+
+// With a scrollback larger than maxSubscriberBuffer, a resync loads a snapshot
+// bigger than the base 1 MiB. The per-subscriber cap must account for that, or
+// every resync would instantly re-overflow and thrash. subscriberCap adds the
+// ring size so a resync still leaves live-output headroom.
+func TestSubscriberCapFitsResyncSnapshot(t *testing.T) {
+	const ringCap = 4 << 20 // 4 MiB scrollback, well over maxSubscriberBuffer
+	s := newSubscriber(subscriberCap(ringCap))
+	s.resyncTo(make([]byte, ringCap)) // full-size snapshot into the buffer
+	<-s.Notify()
+	// A live chunk arriving before the writer drains must still fit — not
+	// re-overflow the moment a resync happened.
+	if !s.push(make([]byte, 32*1024)) {
+		t.Fatal("a resync snapshot must leave streaming headroom, not instantly re-overflow")
 	}
 }

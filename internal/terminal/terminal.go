@@ -10,12 +10,22 @@ import (
 	"github.com/creack/pty"
 )
 
-// maxSubscriberBuffer caps how many bytes may queue for a single slow
-// subscriber before it is resynced. The PTY read loop never blocks on a
-// consumer; one that falls this far behind has its stale backlog discarded and
-// is repainted from the current scrollback snapshot instead (see resyncTo), so
-// the program never pauses and other viewers are unaffected.
+// maxSubscriberBuffer is how many bytes of un-drained LIVE output may queue for
+// a single slow subscriber before it is resynced. The PTY read loop never
+// blocks on a consumer; one that falls this far behind has its stale backlog
+// discarded and is repainted from the current scrollback snapshot instead (see
+// resyncTo), so the program never pauses and other viewers are unaffected.
 const maxSubscriberBuffer = 1 << 20 // 1 MiB
+
+// subscriberCap is a subscriber's hard buffer limit: the live-output headroom
+// above PLUS room for one full scrollback snapshot. A resync loads a snapshot
+// (up to the ring size) into the buffer, so without the ringCap term a large
+// scrollback (> maxSubscriberBuffer) would make every resync instantly
+// re-overflow — thrashing repeated full repaints. Adding ringCap guarantees a
+// resync leaves ~maxSubscriberBuffer of streaming headroom before the next one.
+func subscriberCap(ringCap int) int {
+	return maxSubscriberBuffer + ringCap
+}
 
 // risReset is ESC c (RIS, "reset to initial state") — a full terminal reset.
 // It prefixes an overflow resync so the client repaints from a clean slate
@@ -31,11 +41,12 @@ type Subscriber struct {
 	buf    []byte
 	closed bool
 	resync bool // next Take is an overflow resync: send it as a repaint, not a stream chunk
+	cap    int  // hard buffer limit before overflow -> resync (see subscriberCap)
 	notify chan struct{}
 }
 
-func newSubscriber() *Subscriber {
-	return &Subscriber{notify: make(chan struct{}, 1)}
+func newSubscriber(cap int) *Subscriber {
+	return &Subscriber{notify: make(chan struct{}, 1), cap: cap}
 }
 
 // Notify signals whenever output is pending or the subscriber has closed.
@@ -64,7 +75,7 @@ func (s *Subscriber) push(p []byte) bool {
 		s.mu.Unlock()
 		return true
 	}
-	if len(s.buf)+len(p) > maxSubscriberBuffer {
+	if len(s.buf)+len(p) > s.cap {
 		s.mu.Unlock()
 		return false
 	}
@@ -257,7 +268,7 @@ func (t *Terminal) Subscribe() (snapshot []byte, sub *Subscriber, unsub func(), 
 	}
 	id := t.nextSubID
 	t.nextSubID++
-	sub = newSubscriber()
+	sub = newSubscriber(subscriberCap(t.ring.cap))
 	t.subscribers[id] = sub
 	snapshot = t.ring.Snapshot()
 	unsub = func() {
