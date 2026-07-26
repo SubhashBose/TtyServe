@@ -156,8 +156,23 @@
       } catch (e) {}
     }
     // Terminal bell (BEL / \a): audible beep and/or a brief visual flash.
+    // Never rings while a scrollback repaint is parsing. A replay is history
+    // being redrawn, not something happening now, and it would ring twice over:
+    //   - every real bell ever written to the buffer sounds again, and
+    //   - the ring keeps the last N *bytes* with no regard for escape
+    //     boundaries, so a wrapped snapshot can begin mid-sequence. Shells emit
+    //     the window title as ESC ] 0 ; <title> BEL on every prompt; lose the
+    //     leading "ESC ]" to the cut and that trailing BEL stops being a silent
+    //     string terminator and becomes an audible ground-state bell that never
+    //     happened. (See TestRingCanTruncateOSCLeavingBareBEL.)
     if (cfg.bell && cfg.bell !== "none" && term.onBell) {
-      try { term.onBell(() => ringBell(entryForTerm(term))); } catch (e) {}
+      try {
+        term.onBell(() => {
+          const e = entryForTerm(term);
+          if (e && e.replaying) return;
+          ringBell(e);
+        });
+      } catch (e) {}
     }
     return { term, fit };
   }
@@ -878,9 +893,9 @@
   }
 
   // Create a share link with the chosen access + expiry, returning its URL.
-  async function createShareLink(id, readOnly, ttl, singleUse) {
+  async function createShareLink(id, readOnly, ttl, singleUse, isPublic) {
     const res = await api("POST", "sessions/" + encodeURIComponent(id) + "/share",
-      { readOnly: readOnly, ttl: ttl || "", singleUse: !!singleUse });
+      { readOnly: readOnly, ttl: ttl || "", singleUse: !!singleUse, public: !!isPublic });
     const entry = panes.get(id);
     if (entry) { entry.sharedOut = true; applyShareBadge(entry); }
     return shareURL(res.token);
@@ -949,8 +964,42 @@
     onceField.appendChild(onceLabel);
     box.appendChild(onceField);
 
+    // Public ("no sign-in") — only offered when the server permits it. The
+    // server enforces the same ceiling; this just avoids showing a choice that
+    // would be rejected.
+    const pubPolicy = cfg.publicShareLinks || "none";
+    let pubBox = null;
+    if (pubPolicy !== "none") {
+      const pubField = el("div", "field checkbox");
+      pubBox = el("input"); pubBox.type = "checkbox"; pubBox.id = "share-public";
+      const pubLabel = el("label", null, pubPolicy === "readonly"
+        ? "Anyone with the link — no sign-in required (view-only)"
+        : "Anyone with the link — no sign-in required");
+      pubLabel.setAttribute("for", "share-public");
+      pubField.appendChild(pubBox);
+      pubField.appendChild(pubLabel);
+      box.appendChild(pubField);
+
+      // With a read-only ceiling, a public link must be view-only: reflect
+      // that in the access control rather than failing on submit.
+      const syncAccess = () => {
+        if (pubPolicy === "readonly" && pubBox.checked) {
+          accessSel.value = "ro";
+          accessSel.disabled = true;
+        } else {
+          accessSel.disabled = false;
+        }
+      };
+      pubBox.addEventListener("change", syncAccess);
+      syncAccess();
+    }
+
     box.appendChild(el("p", "modal-hint",
       "Expiry and one-time limit how long the link can be accepted; access already granted persists until you stop sharing."));
+    if (pubBox) {
+      box.appendChild(el("p", "modal-hint",
+        "A no-sign-in link is a secret: anyone who obtains the URL gets in. Prefer an expiry, and stop sharing when done."));
+    }
 
     // Result row (hidden until a link is created)
     const result = el("div", "field result");
@@ -983,7 +1032,8 @@
       createBtn.disabled = true;
       try {
         const url = await createShareLink(
-          id, accessSel.value === "ro", expSel.value, onceBox.checked);
+          id, accessSel.value === "ro", expSel.value, onceBox.checked,
+          pubBox && pubBox.checked);
         linkInput.value = url;
         result.style.display = "";
         stopBtn.style.display = ""; // a link now exists -> allow stopping
@@ -1122,6 +1172,14 @@
   window.addEventListener("blur", closeTabMenu);
 
   async function addSession() {
+    // A share-link guest owns nothing and cannot create terminals (the server
+    // refuses). Say so instead of firing a request that always 403s — this is
+    // the single choke point for every caller, including the auto-respawn and
+    // empty-list paths.
+    if (cfg.isGuest) {
+      showStatus("this shared terminal is no longer available");
+      return;
+    }
     try {
       // Forward the page query so url_arg/url_env apply to new tabs too;
       // empty title -> server default.

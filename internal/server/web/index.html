@@ -127,7 +127,7 @@
 <body>
 <div id="app" class="bar-{{.TabBarPosition}}{{if not .MultiSession}} hide-tabs{{end}}">
   <div id="tabbar">
-    {{if .MultiSession}}<button id="newtab" title="New terminal">+ New</button>{{end}}
+    {{if and .MultiSession (not .IsGuest)}}<button id="newtab" title="New terminal">+ New</button>{{end}}
   </div>
   <div id="terminals"></div>
   <div id="status"></div>
@@ -149,6 +149,8 @@
     tabShowPS1: {{.TabShowPS1}},
     autoRespawn: {{.AutoRespawn}},
     allowSharing: {{.AllowSharing}},
+    publicShareLinks: "{{.PublicShareLinks}}",
+    isGuest: {{.IsGuest}},
     pingSeconds: {{.PingSeconds}},
     closeOnExit: {{.CloseOnExit}},
     domRenderer: {{.DOMRenderer}},

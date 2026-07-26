@@ -50,6 +50,7 @@ func main() {
 	proxyHeaderName := flag.String("proxy-header-name", def.ProxyHeaderName, "header `key` carrying the user identity for 'proxy_header' persistance mode, each user ID gets their own\nsession")
 	scrollback := flag.Int("scrollback-bytes", def.ScrollbackBytes, "server-side replay buffer per persistent session")
 	allowSharing := flag.Bool("allow-sharing", def.AllowSharing, "allow sharing a terminal tab with another authenticated user via a link (need persistent-mode)")
+	publicShareLinks := flag.String("public-share-links", def.PublicShareLinks, "how far a share link may skip authentication: 'none', 'readonly' or 'all' (needs allow-sharing)")
 	maxClients := flag.Int("max-clients-per-session", def.MaxClientsPerSession, "concurrent viewers per session (0 = unlimited)")
 	cookieName := flag.String("cookie-name", def.CookieName, "short_term session cookie name")
 	cookieSecure := flag.Bool("cookie-secure", def.CookieSecure, "mark the session cookie Secure (HTTPS only)")
@@ -196,6 +197,8 @@ func main() {
 			cfg.AutoRespawn = *autoRespawn
 		case "allow-sharing":
 			cfg.AllowSharing = *allowSharing
+		case "public-share-links":
+			cfg.PublicShareLinks = *publicShareLinks
 		case "tab-show-psname":
 			cfg.TabShowPsname = *tabShowPsname
 		case "tab-show-cwd":

@@ -97,11 +97,12 @@ defaults. See `config.example.yaml` for the annotated file with detailed informa
 | `session-persistence`                | master on/off for persistence (default: true)                                                                                                        |
 | `persistence-mode`                   | `user`, `short_term` or `proxy_header` (default: `short_term`)                                                                               |
 | `idle-timeout`                       | short-term session lifetime when disconnected (default: 5m)                                                                                          |
-| `users`                              | list of comma-separated `name:password` pairs for `user` mode; with persistence off they act as a plain access gate                              |
+| `users`                              | list of comma-separated `name:password` pairs. This is identity for `user` persistence mode. When set, basic auth is **required in every mode** — only the session identity differs (see [Authentication](#authentication)); empty means no auth at all |
 | `auth-realm`                         | HTTP basic-auth realm shown in the browser's login prompt (default `ttyserve`)                                                                     |
 | `proxy-header-name`                  | header carrying the identity in `proxy_header` mode (default `X-Forwarded-User`)                                                                 |
 | `scrollback-bytes`                   | server-side replay buffer per session (default: 262144)                                                                                              |
 | `allow-sharing`                      | let a user share a tab with another authenticated user via a link (default false), works in persistent modes only                                    |
+| `public-share-links`                 | ceiling on links that skip sign-in: `none` (default), `readonly`, `all`. Owner still opts in per link; see [Sharing a terminal](#sharing-a-terminal) |
 | `max-clients-per-session`            | shared-viewer cap (default: 0 = unlimited)                                                                                                           |
 | `cookie-name`                        | short-term session cookie name (default `ttyserve_session`); change to run multiple instances on one host                                          |
 | `cookie-secure`                      | mark the session cookie `Secure` — HTTPS only (default false; set true behind TLS)                                                                |
@@ -136,6 +137,30 @@ Other CLI exclusive flags are:
 
 The boolean configuration options (true/false) can be set in config YAML file, and/or through CLI flags. Boolean option that are `true` by default can be set to false in CLI as `--option=false`.
 
+### Authentication
+
+Authentication and *identity* are two separate things in TtyServe:
+
+- **`users` decides whether a login is required.** If the list is non-empty,
+  HTTP basic auth is required on **every** request, in **every** mode. If it is
+  empty there is no authentication at all — anyone who can reach the port gets a
+  terminal.
+- **`persistence-mode` decides only what a session is tied to** (see below).
+
+So `users` is never silently ignored: configuring it always gates access. The
+only thing that varies is the identity a session hangs off —
+
+| Mode | Identity | Role of `users` |
+| ---- | -------- | --------------- |
+| `user` | the username | **is** the identity (required in this mode) |
+| `short_term` | signed cookie **+** username | gates access; the identity binds both, so a second person logging in on the same browser gets their own sessions rather than inheriting the first's |
+| `proxy_header` | the header value | an extra door in front; the header stays authoritative for identity |
+| persistence off | per-page ephemeral token | gates access; sessions stay ephemeral |
+
+> When `persistence off` or in `short_term` mode, **do not combine an empty `users` with `allow-sharing` on an exposed port.**
+> With no authentication a share link is a bearer token to a live shell for
+> anyone who obtains the URL.
+
 ### Session lifecycle
 
 - **user mode**: identity =`<user>:<password>`, username of HTTP basic-auth. Sessions persist across reconnects and
@@ -143,7 +168,9 @@ The boolean configuration options (true/false) can be set in config YAML file, a
 - **proxy_header mode**: identity =`header:<value>` of`proxy-header-name`.
   Same lifecycle as user mode. Requests without the header get 403 (fail
   closed — a misconfigured proxy must not hand out sessions).
-- **short_term mode**: identity =`cookie:<token>` from a signed HttpOnly session cookie set by TtyServe.
+- **short_term mode**: identity =`cookie:<token>` from a signed HttpOnly session cookie set by TtyServe
+  (`cookie:<token>|user:<name>` when`users` are configured, so the identity is
+  per browser *and* per user).
   When all websockets for a client detach, an idle timer starts; after`idle-timeout` the client and all its sessions are killed by the reaper.
 - **persistence off**: each page load is a fresh ephemeral identity; closing the
   socket discards the session. If`users` are configured, they gate access
@@ -188,12 +215,50 @@ dialog. You choose:
 - **Link expires** — Never, or a time window (1 hour up to 7 days). This limits
   how long the link can be*accepted*; access already granted keeps working.
 - **One-time** — the link stops working after the first person accepts it.
+- **Anyone with the link — no sign-in required** — only shown when the server
+  allows it (see below). Leave it unticked and the link stays private.
 
 Click **Create link** and the shareable link is copied to your clipboard. Send
-it to another user; when they open it they must sign in as usual (sharing never
-bypasses authentication), and the terminal then appears as a tab in their list.
-Their access is durable — it survives page reloads and re-logins — until you
-stop sharing or the terminal closes.
+it to another user; unless you explicitly made the link public, they must sign
+in as usual, and the terminal then appears as a tab in their list. Their access
+is durable — it survives page reloads and re-logins — until you stop sharing or
+the terminal closes.
+
+### Links that skip sign-in
+
+By default every recipient must authenticate. `public-share-links` sets a
+server-wide **ceiling** on how far an owner may go beyond that:
+
+| Value | Effect |
+| ----- | ------ |
+| `none` (default) | Can not skip auth for shared links. |
+| `readonly` | An owner may mark a link public, but it is forced **view-only** — an anonymous visitor can watch, never type. |
+| `all` | A public link may also grant control. |
+
+The admin sets the ceiling; the owner still opts in **per link**, so enabling
+this never silently changes the meaning of existing or future private links.
+
+An anonymous visitor who opens a public link becomes a **guest**: the server
+mints them an identity in a signed, HttpOnly cookie (so the token need not stay
+in the address bar, and reloads keep working). Guests are deliberately
+second-class and enforced server-side:
+
+- A guest **can never create a terminal** — not via the tab bar, not via the
+  API, not by opening the page. They only ever see the terminal the link
+  granted.
+- A guest can only accept a link explicitly marked public; a guest cookie
+  cannot be replayed against a private link.
+- View-only means view-only: input and resize are rejected on the server, not
+  merely hidden in the UI.
+- In every mode, guests are reaped when idle (by `idle-timeout`), since (unlike a username) their identity space is unbounded.
+- **Stop sharing** disconnects and revokes guests exactly like anyone else.
+
+> **A public link is a bearer credential.** Anyone who obtains the URL — from
+> chat, a proxy access log, a browser history — gets in, with no account and no
+> audit trail of who they were. Prefer `readonly`, set an expiry, and stop
+> sharing when you are done. TtyServe sends `Referrer-Policy: no-referrer` so
+> clicking a link in terminal output cannot leak the token to a third-party
+> site, and the frontend strips the token from the address bar once accepted.
 
 **What you'll see in the interface:**
 

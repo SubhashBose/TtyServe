@@ -48,19 +48,28 @@ persistence-mode: "short_term"  # (default: short_term)
 # --- Proxy header identity (persistence-mode: proxy_header) ---
 proxy-header-name: "X-Forwarded-User"  # (default: X-Forwarded-User)
 
-# --- User auth (persistence-mode: user) ---
-# Required for 'user' mode. Also honored with session-persistence: false,
-# where they act as a plain access gate (login required, sessions stay
-# ephemeral). (default: none)
+# --- User auth ---
+# Whenever users are configured, HTTP basic auth is REQUIRED — in every mode.
+# What differs is only what identifies a session:
+#   'user'         -> the username IS the identity (users are required here)
+#   'short_term'   -> the cookie identifies the browser; users gate access, and
+#                     the identity is (browser + user) so a second person
+#                     logging in on the same browser gets their own sessions
+#   'proxy_header' -> the header stays authoritative for identity; users are
+#                     simply an extra door in front of it
+#   session-persistence: false -> plain access gate, sessions stay ephemeral
+# Leave empty for no authentication at all (anyone who can reach the port gets
+# a terminal). Do NOT leave it empty together with allow-sharing on an exposed
+# port: a share link would then be a bearer token to a live shell. (default: none)
 users:
   - name: "admin"
     password: "changeme"
-  # - name: "alice"
-  #   password: "s3cret"
+  - name: "alice"
+    password: "s3cret"
 auth-realm: "ttyserve"       # (default: ttyserve)
 
 # --- Short-term sessions (persistence-mode: short_term) ---
-idle-timeout: 5s             # reap sessions with no connection this long (default: 5m)
+idle-timeout: 5m             # reap sessions with no connection this long (default: 5m)
 cookie-name: "ttyserve_session"  # (default: ttyserve_session)
 cookie-secure: false         # set true when serving over HTTPS (default: false)
 
@@ -113,6 +122,18 @@ allow-sharing: true          # let a user share a terminal tab with another
                              # authenticated user via a link — right-click a tab
                              # (default: false). Persistent modes only. View-only
                              # or full-control; owner can revoke anytime.
+
+# How far a share link may skip authentication ("anyone with the link"):
+#   none     -> never (default). Every recipient must sign in.
+#   readonly -> an anonymous visitor may WATCH a terminal, never type in it.
+#   all      -> an anonymous visitor may take full control.
+# This is only a CEILING: the owner still ticks a per-link checkbox, so a link
+# is private unless they explicitly make it public. Requires allow-sharing.
+# SECURITY: a public link is a bearer credential — anyone who obtains the URL
+# (chat, proxy logs, browser history) gets in, with no account and no audit
+# trail. Anonymous guests can ONLY view the shared terminal: they can never
+# create one. Prefer 'readonly', set an expiry, and stop sharing when done.
+public-share-links: "none"
 
 # --- Tab titles ---
 # Auto titles are "<process> <dir>", e.g. "vim myproject".

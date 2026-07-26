@@ -21,7 +21,22 @@ var (
 	ErrNotOwner        = errors.New("only the session owner can do that")
 	ErrShareInvalid    = errors.New("share link is invalid or has expired")
 	ErrReadOnly        = errors.New("read-only access")
+	ErrPublicDisabled  = errors.New("public (no sign-in) share links are not allowed")
+	ErrPublicNeedsRO   = errors.New("public share links must be view-only on this server")
 )
+
+// maxGrantsPerSession bounds how many live share links one session may hold.
+// It sits far above legitimate use (a handful, since interchangeable links are
+// reused), so it only trips on abuse: minting is otherwise an unbounded way to
+// grow the grant map, and unlike spawning sessions it costs no PTY or process,
+// so nothing else pushes back. At the cap the OLDEST grant is evicted.
+const maxGrantsPerSession = 100
+
+// grantSweepInterval bounds how often the dead-session sweep in
+// pruneSharesLocked runs. That sweep resolves every grant against live client
+// state, and pruning happens on paths called for each owned session on every
+// session listing — so it is rate-limited, while cheap expiry pruning is not.
+const grantSweepInterval = 5 * time.Second
 
 // shareGrant is a live share invitation: a token that lets another
 // authenticated client attach to sessionID owned by owner.
@@ -31,6 +46,14 @@ type shareGrant struct {
 	readOnly  bool
 	expires   time.Time // zero = never
 	singleUse bool      // consumed on first successful accept
+	// public marks a link that skips authentication entirely: anyone holding
+	// it may attach as an anonymous guest. Bounded by cfg.PublicShareLinks.
+	public bool
+	// seq orders grants by creation so the cap can evict the oldest. A
+	// monotonic counter rather than a timestamp: strictly increasing (two
+	// grants minted in one clock tick can't tie), 8 bytes instead of 24, and
+	// consistent with nextConnID/nextSubID elsewhere.
+	seq uint64
 }
 
 // Manager owns all clients and their sessions.
@@ -48,6 +71,16 @@ type Manager struct {
 
 	sharesMu sync.Mutex
 	shares   map[string]*shareGrant // token -> grant
+	// nextGrantSeq issues shareGrant.seq values; lastGrantSweep rate-limits the
+	// dead-session sweep. Both guarded by sharesMu.
+	nextGrantSeq   uint64
+	lastGrantSweep time.Time
+
+	// reapAll is true in the modes whose identity space is unbounded for
+	// everyone (short_term, ephemeral). When false the reaper still runs if
+	// guests are possible, but collects only them — reaping a `user`-mode
+	// client would kill the persistent sessions that mode promises.
+	reapAll bool
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -83,8 +116,14 @@ func NewManager(cfg config.Config) *Manager {
 	// mode, where every page load mints a fresh identity: sessions die with
 	// their socket there, but the client entries would otherwise accumulate
 	// in m.clients forever (every page hit, incl. bots, creates one).
-	if !cfg.SessionPersistence ||
-		(cfg.SessionPersistence && cfg.PersistenceMode == config.PersistShortTerm) {
+	m.reapAll = !cfg.SessionPersistence ||
+		(cfg.SessionPersistence && cfg.PersistenceMode == config.PersistShortTerm)
+	// Public share links add the same unbounded-identity problem to modes that
+	// otherwise have none: every anonymous visitor (and every crawler that
+	// follows the link) mints a guest. So the reaper also runs for them in
+	// `user`/`proxy_header` mode — collecting guests ONLY, since reaping a real
+	// user there would kill the persistent sessions that mode guarantees.
+	if m.reapAll || cfg.PublicShareLinks != config.PublicShareNone {
 		go m.reaper()
 	}
 	// Auto titles only matter when tabs are visible, sessions outlive a
@@ -226,9 +265,27 @@ func (m *Manager) sharingEnabled() bool {
 // Share mints a share token for a session the client owns. ttl <= 0 means
 // the invitation never expires; singleUse consumes it on first accept.
 // Returns the opaque token; the caller builds the user-facing link from it.
-func (m *Manager) Share(c *Client, sessionID string, readOnly bool, ttl time.Duration, singleUse bool) (string, error) {
+func (m *Manager) Share(c *Client, sessionID string, readOnly bool, ttl time.Duration, singleUse, public bool) (string, error) {
 	if !m.sharingEnabled() {
 		return "", ErrSharingDisabled
+	}
+	// A public link skips authentication, so it may only go as far as the
+	// server-wide ceiling allows. The owner chooses per link; the admin bounds
+	// the choice, so one user cannot unilaterally expose an anonymous terminal.
+	if public {
+		switch m.cfg.PublicShareLinks {
+		case config.PublicShareAll:
+		case config.PublicShareReadOnly:
+			if !readOnly {
+				return "", ErrPublicNeedsRO
+			}
+		default:
+			return "", ErrPublicDisabled
+		}
+	}
+	// A guest can never own a session, so it can never re-share one either.
+	if c.IsGuest() {
+		return "", ErrNotOwner
 	}
 	s, ok := c.Get(sessionID)
 	if !ok {
@@ -238,16 +295,67 @@ func (m *Manager) Share(c *Client, sessionID string, readOnly bool, ttl time.Dur
 	if s.ownerID() != c.ID {
 		return "", ErrNotOwner
 	}
-	token := shareToken()
-	g := &shareGrant{owner: c.ID, sessionID: sessionID, readOnly: readOnly, singleUse: singleUse}
+	m.sharesMu.Lock()
+	defer m.sharesMu.Unlock()
+	m.pruneSharesLocked()
+
+	// Reuse an interchangeable grant instead of minting a duplicate, so
+	// repeated "Share" clicks collapse onto one token rather than consuming
+	// cap budget. Only permanent multi-use links qualify: reusing a single-use
+	// grant would hand the second requester a token the first can spend, and
+	// reusing an expiring one would silently shorten their window.
+	if ttl <= 0 && !singleUse {
+		for tok, g := range m.shares {
+			if g.sessionID == sessionID && g.owner == c.ID &&
+				g.readOnly == readOnly && g.public == public &&
+				g.expires.IsZero() && !g.singleUse {
+				return tok, nil
+			}
+		}
+	}
+
+	// Make room for the new grant, evicting this session's oldest links first.
+	m.evictOldestGrantsLocked(sessionID, maxGrantsPerSession-1)
+
+	m.nextGrantSeq++
+	g := &shareGrant{
+		owner:     c.ID,
+		sessionID: sessionID,
+		readOnly:  readOnly,
+		singleUse: singleUse,
+		public:    public,
+		seq:       m.nextGrantSeq,
+	}
 	if ttl > 0 {
 		g.expires = time.Now().Add(ttl)
 	}
-	m.sharesMu.Lock()
-	m.pruneSharesLocked()
+	token := shareToken()
 	m.shares[token] = g
-	m.sharesMu.Unlock()
 	return token, nil
+}
+
+// evictOldestGrantsLocked deletes a session's oldest grants until at most keep
+// remain. Caller holds sharesMu. Only runs when the session is at its cap, so
+// the repeated scan costs nothing in normal operation.
+func (m *Manager) evictOldestGrantsLocked(sessionID string, keep int) {
+	for {
+		var oldestTok string
+		var oldestSeq uint64
+		n := 0
+		for tok, g := range m.shares {
+			if g.sessionID != sessionID {
+				continue
+			}
+			n++
+			if oldestTok == "" || g.seq < oldestSeq {
+				oldestTok, oldestSeq = tok, g.seq
+			}
+		}
+		if n <= keep || oldestTok == "" {
+			return
+		}
+		delete(m.shares, oldestTok)
+	}
 }
 
 // AcceptShare grafts a shared session into the accepting client's tab list.
@@ -283,6 +391,12 @@ func (m *Manager) AcceptShare(c *Client, token string) (*Session, error) {
 	if !ok {
 		return nil, ErrShareInvalid // owner closed it since
 	}
+	// An unauthenticated guest may ONLY ever accept a link explicitly marked
+	// public. Without this, a guest identity minted from one public link could
+	// be replayed to accept any other (private) token it happened to obtain.
+	if c.IsGuest() && !g.public {
+		return nil, ErrShareInvalid
+	}
 	// Accepting your own share is a harmless no-op.
 	if c.ID == g.owner {
 		return s, nil
@@ -302,6 +416,27 @@ func (m *Manager) AcceptShare(c *Client, token string) (*Session, error) {
 		delete(m.shares, token)
 	}
 	return s, nil
+}
+
+// IsPublicShare reports whether a token names a live grant that was explicitly
+// marked "anyone with the link". The server calls this BEFORE any identity
+// exists, to decide whether an unauthenticated request may be admitted as a
+// guest — so it validates the grant without granting anything itself.
+func (m *Manager) IsPublicShare(token string) bool {
+	if !m.sharingEnabled() || m.cfg.PublicShareLinks == config.PublicShareNone {
+		return false
+	}
+	m.sharesMu.Lock()
+	defer m.sharesMu.Unlock()
+	g, ok := m.shares[token]
+	if !ok || !g.public {
+		return false
+	}
+	if !g.expires.IsZero() && time.Now().After(g.expires) {
+		delete(m.shares, token)
+		return false
+	}
+	return m.grantSessionLiveLocked(g)
 }
 
 // RevokeShare invalidates all share links for a session the client owns and
@@ -336,28 +471,56 @@ func (m *Manager) RevokeShare(c *Client, sessionID string) error {
 func (m *Manager) HasActiveLinks(sessionID string) bool {
 	m.sharesMu.Lock()
 	defer m.sharesMu.Unlock()
+	// Prune first so the answer is exact, and so this — the path the frontend
+	// polls — is what regularly reclaims grants of closed sessions.
+	m.pruneSharesLocked()
+	for _, g := range m.shares {
+		if g.sessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
+// pruneSharesLocked drops grants that can never be accepted again: expired
+// ones (every call, cheap) and — at most every grantSweepInterval — those whose
+// session is gone.
+//
+// The dead-session sweep is what keeps the map from growing forever. A session
+// dies through four paths (owner close, shell exit, idle reap, shutdown) and
+// all of them funnel through Client.remove(), which holds no reference to the
+// Manager and so cannot clean this map itself. Sweeping here covers every
+// teardown path — including any added later — without touching one of them.
+// Descending into m.mu / client locks is safe: sharesMu is the outermost lock,
+// the same order AcceptShare already uses.
+//
+// Caller holds sharesMu.
+func (m *Manager) pruneSharesLocked() {
 	now := time.Now()
-	found := false
+	sweep := now.Sub(m.lastGrantSweep) >= grantSweepInterval
+	if sweep {
+		m.lastGrantSweep = now
+	}
 	for tok, g := range m.shares {
 		if !g.expires.IsZero() && now.After(g.expires) {
 			delete(m.shares, tok)
 			continue
 		}
-		if g.sessionID == sessionID {
-			found = true
-		}
-	}
-	return found
-}
-
-// pruneSharesLocked drops expired grants. Caller holds sharesMu.
-func (m *Manager) pruneSharesLocked() {
-	now := time.Now()
-	for tok, g := range m.shares {
-		if !g.expires.IsZero() && now.After(g.expires) {
+		if sweep && !m.grantSessionLiveLocked(g) {
 			delete(m.shares, tok)
 		}
 	}
+}
+
+// grantSessionLiveLocked reports whether a grant's owner and session still
+// exist — i.e. whether accepting it could ever succeed. Caller holds sharesMu.
+func (m *Manager) grantSessionLiveLocked(g *shareGrant) bool {
+	owner, ok := m.GetClient(g.owner)
+	if !ok {
+		return false
+	}
+	_, ok = owner.Get(g.sessionID)
+	return ok
 }
 
 func shareToken() string {
@@ -466,6 +629,10 @@ func (m *Manager) reapOnce() {
 	var toKill []*Client
 	m.mu.Lock()
 	for id, c := range m.clients {
+		// Outside the always-reap modes only guests are collectable.
+		if !m.reapAll && !c.IsGuest() {
+			continue
+		}
 		last, active := c.idleSince()
 		if active == 0 && last.Before(cutoff) {
 			toKill = append(toKill, c)

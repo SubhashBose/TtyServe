@@ -261,13 +261,37 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	return mux
+	return securityHeaders(mux)
+}
+
+// securityHeaders sets response headers that apply to every route.
+//
+// Referrer-Policy matters specifically because a share link carries its token
+// in the URL (/?share=<token>). Without it, any navigation away from that page
+// — clicking a link in terminal output, an image the page loads — would put the
+// token in the Referer header and hand a third-party site a working capability
+// for the terminal. The frontend strips the token from the address bar right
+// after accepting it, but this closes the window before that runs, and covers
+// requests the frontend never sees.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // resolve authenticates and returns the client, writing any cookie. On auth
 // failure it writes the response and returns ok=false.
 func (s *Server) resolve(w http.ResponseWriter, r *http.Request) (*session.Client, bool) {
 	id, err := s.auth.Authenticate(r)
+	// A public share link admits a visitor who has no credentials. This runs
+	// only after normal authentication has already failed, so it can never
+	// weaken an authenticated identity — it just offers a strictly lesser one.
+	if err == auth.ErrUnauthorized || err == auth.ErrNoIdentityHeader {
+		if gid, ok := s.guestIdentity(r); ok {
+			id, err = gid, nil
+		}
+	}
 	if err == auth.ErrUnauthorized {
 		s.auth.WriteUnauthorized(w)
 		return nil, false
@@ -301,6 +325,31 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) (*session.Clien
 	// where the socket is down but the page is still polling.)
 	s.mgr.Touch(cl)
 	return cl, true
+}
+
+// guestIdentity resolves an unauthenticated request to an anonymous share-link
+// identity, in one of two ways:
+//
+//   - it already carries a valid guest cookie (a returning guest, e.g. a page
+//     reload after the share token was stripped from the URL), or
+//   - it is arriving on a link (?share=<token>) whose grant is explicitly
+//     marked public, in which case a fresh guest identity is minted.
+//
+// The identity is always server-generated. A request can never name the guest
+// it wants to be, so one visitor cannot plant an identity on another.
+func (s *Server) guestIdentity(r *http.Request) (auth.Identity, bool) {
+	if s.cfg.PublicShareLinks == config.PublicShareNone {
+		return auth.Identity{}, false
+	}
+	if tok, ok := s.auth.GuestToken(r); ok {
+		return auth.Identity{Key: session.GuestIDPrefix + tok}, true
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("share"))
+	if token == "" || !s.mgr.IsPublicShare(token) {
+		return auth.Identity{}, false
+	}
+	tok, cookie := s.auth.NewGuestToken()
+	return auth.Identity{Key: session.GuestIDPrefix + tok, SetCookie: cookie}, true
 }
 
 // urlSpawnParams extracts per-session spawn parameters from the request
@@ -371,6 +420,11 @@ type pageData struct {
 	CloseOnExit        bool
 	DOMRenderer        bool
 	AllowSharing       bool
+	// PublicShareLinks is the ceiling on auth-skipping links ("none",
+	// "readonly", "all"); IsGuest marks a page served to an anonymous
+	// share-link visitor, which hides everything they cannot do.
+	PublicShareLinks string
+	IsGuest          bool
 	// PingSeconds lets the client derive the server's dead-peer deadline
 	// (3× ping-interval) for its own liveness give-up limit.
 	PingSeconds int
@@ -401,7 +455,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// reaper, so pre-spawning here would leak a shell for every page hit
 	// (bots, prefetch). The frontend creates the session on demand instead,
 	// and it's discarded when the socket closes.
-	if s.cfg.SessionPersistence {
+	// Guests get no terminal of their own: they may only ever view the session
+	// their link granted. Without this, merely opening a public share link
+	// would spawn a shell for an anonymous visitor.
+	if s.cfg.SessionPersistence && !cl.IsGuest() {
 		args, env := s.spawnParams(r)
 		if _, err := s.mgr.EnsureDefaultSession(cl, args, env); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -438,6 +495,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		CloseOnExit:        s.cfg.CloseOnExit,
 		DOMRenderer:        s.cfg.DOMRenderer,
 		AllowSharing:       s.cfg.AllowSharing && s.cfg.SessionPersistence,
+		PublicShareLinks:   s.cfg.PublicShareLinks,
+		IsGuest:            cl.IsGuest(),
 		PingSeconds:        int(s.cfg.PingInterval / time.Second),
 		Sessions:           s.sessionList(cl),
 		V:                  s.assetVer,
@@ -483,6 +542,12 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, s.sessionList(cl))
 	case http.MethodPost:
+		// The single most important guest restriction: a share link must never
+		// become a way to spawn your own shell without credentials.
+		if cl.IsGuest() {
+			http.Error(w, "share-link guests cannot create terminals", http.StatusForbidden)
+			return
+		}
 		if !s.cfg.MultiSession && cl.Count() >= 1 {
 			http.Error(w, "multi-session disabled", http.StatusForbidden)
 			return
@@ -593,6 +658,7 @@ func (s *Server) handleSessionItem(w http.ResponseWriter, r *http.Request) {
 					ReadOnly  bool   `json:"readOnly"`
 					TTL       string `json:"ttl"` // Go duration; "" = never expire
 					SingleUse bool   `json:"singleUse"`
+					Public    bool   `json:"public"` // skip auth ("anyone with the link")
 				}
 				_ = json.NewDecoder(r.Body).Decode(&body)
 				var ttl time.Duration
@@ -604,7 +670,7 @@ func (s *Server) handleSessionItem(w http.ResponseWriter, r *http.Request) {
 					}
 					ttl = d
 				}
-				token, err := s.mgr.Share(cl, id, body.ReadOnly, ttl, body.SingleUse)
+				token, err := s.mgr.Share(cl, id, body.ReadOnly, ttl, body.SingleUse, body.Public)
 				if err != nil {
 					code := http.StatusForbidden
 					if err == session.ErrNotFound {
@@ -667,9 +733,14 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// No session specified: use/create the default. The /ws query carries
-		// protocol fields, not URL spawn params, so only the configured env
-		// (with header placeholders expanded) applies here.
+		// No session specified: use/create the default — another path that
+		// would spawn a terminal, so guests are refused here too.
+		if cl.IsGuest() {
+			http.Error(w, "share-link guests cannot create terminals", http.StatusForbidden)
+			return
+		}
+		// The /ws query carries protocol fields, not URL spawn params, so only
+		// the configured env (with header placeholders expanded) applies here.
 		var err error
 		env := config.ExpandHeaderEnv(s.cfg.Env, r.Header.Get)
 		sess, err = s.mgr.EnsureDefaultSession(cl, nil, env)

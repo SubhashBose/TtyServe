@@ -152,6 +152,13 @@ func (s *Session) takeSharers() []*Client {
 	return out
 }
 
+// GuestIDPrefix marks a client identity that arrived through a public share
+// link without authenticating. Guests are deliberately second-class: they may
+// only ever hold shared references (never own a session), and they are reaped
+// in every persistence mode because — unlike a username — their identity space
+// is unbounded.
+const GuestIDPrefix = "guest:"
+
 // Client owns a set of sessions belonging to one identity (a basic-auth user
 // or a short-term cookie holder).
 type Client struct {
@@ -366,6 +373,10 @@ func (c *Client) IsShared(id string) bool {
 	_, shared := c.sharedIn[id]
 	return shared
 }
+
+// IsGuest reports whether this client arrived via a public share link without
+// authenticating.
+func (c *Client) IsGuest() bool { return strings.HasPrefix(c.ID, GuestIDPrefix) }
 
 // Get returns a session by id.
 func (c *Client) Get(id string) (*Session, bool) {

@@ -95,12 +95,26 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 		return Identity{Key: "user:" + user}, nil
 
 	case config.PersistShortTerm:
-		return a.shortTerm(r)
+		// Configured users gate access in EVERY mode. Without this, `users:`
+		// combined with short_term — the default persistence mode — was
+		// silently ignored: a config that reads as authenticated served
+		// terminals to anyone, and any share link became a bearer token to a
+		// live shell for a passer-by.
+		user, err := a.gateUser(r)
+		if err != nil {
+			return Identity{}, err
+		}
+		return a.shortTerm(r, user)
 
 	case config.PersistProxyHeader:
 		// Trust the reverse proxy to have authenticated the user and put a
 		// stable identifier in the configured header. Spoofing is prevented
 		// by deployment (bind to unix:// or loopback), not by this code.
+		// Configured users are an additional door, not the identity: the
+		// header stays authoritative for which sessions the request sees.
+		if _, err := a.gateUser(r); err != nil {
+			return Identity{}, err
+		}
 		v := strings.TrimSpace(r.Header.Get(a.cfg.ProxyHeaderName))
 		if v == "" {
 			return Identity{}, ErrNoIdentityHeader
@@ -112,20 +126,84 @@ func (a *Authenticator) Authenticate(r *http.Request) (Identity, error) {
 	}
 }
 
+// --- Anonymous share-link guests ---
+//
+// A public share link ("anyone with the link") admits a visitor who has no
+// credentials. They still need a stable identity to hold the shared reference
+// across reloads, so the server mints one and carries it in its own signed,
+// HttpOnly cookie. Two properties matter:
+//
+//   - The token is server-generated and signed, never taken from the request:
+//     a client can no more choose its guest identity than it can forge a
+//     session cookie (identity fixation).
+//   - Moving the identity into an HttpOnly cookie gets the capability out of
+//     the address bar, so the share token itself need not stay in the URL.
+//
+// The cookie alone grants nothing: access comes from the shared reference the
+// guest holds, which the owner can revoke at any time.
+
+// GuestCookieName is the cookie carrying an anonymous share-link identity.
+// Distinct from the session cookie so the two can never be confused.
+func (a *Authenticator) GuestCookieName() string { return a.cfg.CookieName + "_guest" }
+
+// NewGuestToken mints a fresh anonymous identity and the cookie that carries it.
+func (a *Authenticator) NewGuestToken() (string, *http.Cookie) {
+	token := randToken(24)
+	c := a.buildCookie(a.signCookie(token))
+	c.Name = a.GuestCookieName()
+	return token, c
+}
+
+// GuestToken returns the identity token from a valid guest cookie.
+func (a *Authenticator) GuestToken(r *http.Request) (string, bool) {
+	c, err := r.Cookie(a.GuestCookieName())
+	if err != nil {
+		return "", false
+	}
+	return a.verifyCookie(c.Value)
+}
+
+// gateUser enforces configured users as a plain access gate, returning the
+// authenticated name ("" when no users are configured, i.e. the gate is off).
+// Used by the modes whose identity comes from somewhere else (cookie, proxy
+// header) so that `users:` never silently does nothing.
+func (a *Authenticator) gateUser(r *http.Request) (string, error) {
+	if len(a.users) == 0 {
+		return "", nil
+	}
+	if !a.basicAuthOK(r) {
+		return "", ErrUnauthorized
+	}
+	user, _, _ := r.BasicAuth()
+	return user, nil
+}
+
 // shortTerm validates an existing signed cookie or mints a new one. In both
 // cases a Set-Cookie is returned: refreshing the cookie on every request gives
 // sliding expiration, so an actively-used browser never drops the cookie while
 // the server still holds sessions for it. (Without this, MaxAge would expire
 // the cookie after idle_timeout even during continuous use, silently assigning
 // the user a new identity.)
-func (a *Authenticator) shortTerm(r *http.Request) (Identity, error) {
+func (a *Authenticator) shortTerm(r *http.Request, user string) (Identity, error) {
+	// The cookie identifies the BROWSER. When users are configured the identity
+	// must also include the authenticated user, because the two have very
+	// different lifetimes: the cookie lives 30+ days while basic-auth
+	// credentials are dropped when the browser closes. Keyed on the cookie
+	// alone, a second user logging in on the same browser would inherit the
+	// first user's sessions.
+	key := func(token string) string {
+		if user == "" {
+			return "cookie:" + token
+		}
+		return "cookie:" + token + "|user:" + user
+	}
 	if c, err := r.Cookie(a.cfg.CookieName); err == nil {
 		if token, ok := a.verifyCookie(c.Value); ok {
-			return Identity{Key: "cookie:" + token, SetCookie: a.buildCookie(c.Value)}, nil
+			return Identity{Key: key(token), SetCookie: a.buildCookie(c.Value)}, nil
 		}
 	}
 	token := randToken(24)
-	return Identity{Key: "cookie:" + token, SetCookie: a.buildCookie(a.signCookie(token))}, nil
+	return Identity{Key: key(token), SetCookie: a.buildCookie(a.signCookie(token))}, nil
 }
 
 func (a *Authenticator) buildCookie(value string) *http.Cookie {

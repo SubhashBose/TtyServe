@@ -50,6 +50,20 @@ const (
 	PersistProxyHeader PersistenceMode = "proxy_header"
 )
 
+// Public share link policy: how far an owner may go when marking a share link
+// "anyone with the link, no sign-in". The admin sets the ceiling; the owner
+// chooses per link within it.
+const (
+	// PublicShareNone forbids auth-skipping links entirely (default).
+	PublicShareNone = "none"
+	// PublicShareReadOnly permits them, but only view-only: an anonymous
+	// visitor may watch a terminal, never type into it.
+	PublicShareReadOnly = "readonly"
+	// PublicShareAll permits them with full control. Anyone who obtains such a
+	// link gets an interactive shell — only for trusted networks.
+	PublicShareAll = "all"
+)
+
 // User is a single basic-auth credential.
 type User struct {
 	Name     string `yaml:"name"`
@@ -229,6 +243,13 @@ type Config struct {
 	// default (opt-in).
 	AllowSharing bool `yaml:"allow-sharing"`
 
+	// PublicShareLinks is the ceiling on links that skip authentication
+	// entirely ("anyone with the link"): PublicShareNone (default),
+	// PublicShareReadOnly, or PublicShareAll. The owner still chooses per link;
+	// this only bounds what they may choose, so one user cannot unilaterally
+	// expose an anonymous terminal on a multi-user server.
+	PublicShareLinks string `yaml:"public-share-links"`
+
 	// AutoRespawn: when the last session ends, immediately start a new one.
 	// When false (default), multi-session mode just leaves the tab bar
 	// empty, and single-session mode offers restart on Enter. The first
@@ -267,6 +288,7 @@ func Default() Config {
 		CloseOnExit:          true,
 		AutoRespawn:          false,
 		AllowSharing:         false,
+		PublicShareLinks:     PublicShareNone,
 		TabShowPsname:        true,
 		TabShowCwd:           true,
 		TabShowPS1:           false,
@@ -316,6 +338,17 @@ func (c *Config) Validate() error {
 		c.TabBarPosition = "top"
 	default:
 		return fmt.Errorf("tab-bar-position must be 'top' or 'right', got %q", c.TabBarPosition)
+	}
+	switch c.PublicShareLinks {
+	case PublicShareNone, PublicShareReadOnly, PublicShareAll:
+	case "":
+		c.PublicShareLinks = PublicShareNone
+	default:
+		return fmt.Errorf("public-share-links must be 'none', 'readonly' or 'all', got %q", c.PublicShareLinks)
+	}
+	// An auth-skipping link is meaningless without sharing itself.
+	if c.PublicShareLinks != PublicShareNone && !c.AllowSharing {
+		return fmt.Errorf("public-share-links requires allow-sharing to be enabled")
 	}
 	switch c.Bell {
 	case "none", "sound", "visual", "both":
