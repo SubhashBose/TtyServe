@@ -243,3 +243,80 @@ func TestReferrerPolicyHeader(t *testing.T) {
 		}
 	}
 }
+
+// A guest cookie satisfies resolve() everywhere else, so no ordinary endpoint
+// ever answers 401 — without a dedicated route a guest could never reach the
+// browser's credential prompt and would be stuck anonymous. /login skips the
+// guest fallback on purpose.
+func TestGuestCanSignIn(t *testing.T) {
+	ts := publicServer(t, config.PublicShareAll)
+	sid := aliceSession(t, ts)
+	tok, _ := mintShare(t, ts, sid, `{"readOnly":true,"public":true}`)
+	_, _, cookies := anon(t, ts, "GET", "/?share="+tok, "", nil)
+
+	// Ordinary endpoints must NOT challenge (that is the trap being fixed).
+	req, _ := http.NewRequest("POST", ts.URL+"/sessions", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("WWW-Authenticate") != "" {
+		t.Fatal("a guest request should not carry a challenge; that is what /login is for")
+	}
+
+	// /login with no credentials must challenge, even holding a guest cookie.
+	req, _ = http.NewRequest("GET", ts.URL+"/login", nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get("WWW-Authenticate") == "" {
+		t.Fatalf("/login must challenge a guest: %d %q",
+			resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
+	}
+
+	// With credentials it signs in, clears the guest identity, and redirects.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	req, _ = http.NewRequest("GET", ts.URL+"/login", nil)
+	req.SetBasicAuth("bob", "bpass")
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected 303 after signing in, got %d", resp.StatusCode)
+	}
+	// The redirect must stay RELATIVE, or a reverse-proxy mount prefix (which
+	// the server never sees) would be dropped and the user sent to the wrong app.
+	if loc := resp.Header.Get("Location"); loc != "./" {
+		t.Fatalf("Location must be relative to survive a proxy prefix, got %q", loc)
+	}
+	var cleared bool
+	for _, c := range resp.Cookies() {
+		if strings.Contains(c.Name, "guest") && c.MaxAge < 0 {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Fatal("signing in must expire the guest cookie")
+	}
+
+	// And bob can now do what a guest could not: create his own terminal.
+	if code, body := do(t, ts, "bob", "POST", "/sessions", `{}`); code != http.StatusCreated {
+		t.Fatalf("signed-in user must be able to create a terminal: %d %s", code, body)
+	}
+}

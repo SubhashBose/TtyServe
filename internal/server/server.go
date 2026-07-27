@@ -255,6 +255,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/sessions", s.handleSessions)     // GET list, POST create
 	mux.HandleFunc("/sessions/", s.handleSessionItem) // PATCH rename, DELETE close, POST {id}/restart
 	mux.HandleFunc("/ws", s.handleWS)
+	mux.HandleFunc("/login", s.handleLogin) // guest -> real user (basic-auth challenge)
 	mux.HandleFunc("/favicon", s.handleFavicon)
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -325,6 +326,41 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) (*session.Clien
 	// where the socket is down but the page is still polling.)
 	s.mgr.Touch(cl)
 	return cl, true
+}
+
+// handleLogin lets a share-link guest sign in as a real user.
+//
+// It exists because a valid guest cookie satisfies resolve() everywhere else,
+// so the 401 + WWW-Authenticate that makes a browser show its credential prompt
+// is never reached — without this route a guest is stuck as a guest until the
+// cookie expires, with no way to reach their own terminals. This handler
+// deliberately skips the guest fallback: no credentials means a challenge.
+//
+// Reached by a top-level navigation rather than fetch(), because browsers only
+// reliably render their sign-in dialog for a navigation.
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	id, err := s.auth.Authenticate(r)
+	if err == auth.ErrUnauthorized {
+		s.auth.WriteUnauthorized(w) // 401 -> the browser prompts
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	// Authenticated: drop the anonymous identity and return to the app.
+	http.SetCookie(w, s.auth.ClearGuestCookie())
+	if id.SetCookie != nil {
+		http.SetCookie(w, id.SetCookie)
+	}
+	// Set Location by hand rather than via http.Redirect: that helper resolves
+	// a relative target against the request path and emits an ABSOLUTE one, so
+	// "./" would become "/" — discarding any reverse-proxy mount prefix the
+	// server never sees (/code/proxy/7681/login -> "/" instead of the app root).
+	// A relative reference is resolved by the browser, which does know the
+	// original URL.
+	w.Header().Set("Location", "./")
+	w.WriteHeader(http.StatusSeeOther)
 }
 
 // guestIdentity resolves an unauthenticated request to an anonymous share-link

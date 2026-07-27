@@ -5,6 +5,7 @@
   const cfg = window.TTYSERVE;
   const tabbar = document.getElementById("tabbar");
   const newtabBtn = document.getElementById("newtab");
+  const signinBtn = document.getElementById("signin");
   const termsEl = document.getElementById("terminals");
   const statusEl = document.getElementById("status");
 
@@ -734,8 +735,12 @@
     }
 
     // Insert before the "+ New" button if present.
-    if (newtabBtn && newtabBtn.parentElement === tabbar) {
-      tabbar.insertBefore(tabEl, newtabBtn);
+    // Tabs are inserted BEFORE the trailing action button, which is what keeps
+    // it last in the bar. Guests get "Sign in" where everyone else gets
+    // "+ New", so anchor on whichever is present.
+    const tailBtn = newtabBtn || signinBtn;
+    if (tailBtn && tailBtn.parentElement === tabbar) {
+      tabbar.insertBefore(tabEl, tailBtn);
     } else {
       tabbar.appendChild(tabEl);
     }
@@ -1313,6 +1318,11 @@
 
   async function init() {
     if (newtabBtn) newtabBtn.addEventListener("click", addSession);
+    // A guest has no way to reach the basic-auth prompt: their guest cookie
+    // satisfies every request, so no endpoint ever answers 401. /login skips
+    // that fallback on purpose. Navigate rather than fetch — browsers only
+    // reliably show the credential dialog for a top-level navigation.
+    if (signinBtn) signinBtn.addEventListener("click", () => { location.href = "login"; });
     // Let drops land anywhere on the bar, not just on other tabs.
     tabbar.addEventListener("dragover", (e) => { if (draggedId) e.preventDefault(); });
     tabbar.addEventListener("drop", (e) => { if (draggedId) e.preventDefault(); });

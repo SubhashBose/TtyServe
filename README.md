@@ -252,6 +252,7 @@ second-class and enforced server-side:
   merely hidden in the UI.
 - In every mode, guests are reaped when idle (by `idle-timeout`), since (unlike a username) their identity space is unbounded.
 - **Stop sharing** disconnects and revokes guests exactly like anyone else.
+- A guest sees a **Sign in** button instead of "+ New" to login as authenticated user. Login clears the anonymous identity and returns to the app. (The shared tab is not carried across sign-in; re-open the link if you still want it.)
 
 > **A public link is a bearer credential.** Anyone who obtains the URL — from
 > chat, a proxy access log, a browser history — gets in, with no account and no

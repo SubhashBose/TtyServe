@@ -154,6 +154,16 @@ func (a *Authenticator) NewGuestToken() (string, *http.Cookie) {
 	return token, c
 }
 
+// ClearGuestCookie expires the anonymous identity, so a guest who signs in
+// stops presenting it. Without this the guest cookie lingers and would silently
+// take over again the moment the browser drops its cached credentials.
+func (a *Authenticator) ClearGuestCookie() *http.Cookie {
+	c := a.buildCookie("")
+	c.Name = a.GuestCookieName()
+	c.MaxAge = -1
+	return c
+}
+
 // GuestToken returns the identity token from a valid guest cookie.
 func (a *Authenticator) GuestToken(r *http.Request) (string, bool) {
 	c, err := r.Cookie(a.GuestCookieName())

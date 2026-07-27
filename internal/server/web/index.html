@@ -58,7 +58,12 @@
   .tab .badge .icon, .tab .pinicon .icon { width: 11px; height: 11px; }
   .tab .pinicon { flex: none; display: flex; align-items: center;
     color: #b8b8b8; }
-  .tab.is-shared { border-color: #4e7ec9; }
+  /* Sharing is signalled by the tab's badge icon, which is shown in exactly the
+     same cases this class is set — so the border must stay out of it. A second
+     blue border competed with .active (identical specificity, and later in this
+     file, so it actually *overrode* it): a shared tab that was also the active
+     one lost the only cue telling you where you are. */
+  .tab.is-shared .badge { color: #7fb2ff; }
 
   .ctxmenu { position: fixed; z-index: 100; background: var(--bar-bg);
     border: 1px solid var(--tab-border); border-radius: 6px; padding: 4px;
@@ -100,9 +105,12 @@
   .tab .title[contenteditable="true"] { user-select: text; cursor: text; }
   .tab .close { opacity: .6; font-weight: bold; padding: 0 2px; }
   .tab .close:hover { opacity: 1; color: #f48771; }
-  #newtab { background: transparent; color: var(--fg); border: 1px dashed var(--tab-border);
-    border-radius: 4px; cursor: pointer; padding: 5px 10px; font-size: 13px; }
-  #newtab:hover { border-color: var(--accent); }
+  /* Trailing action button in the tab bar: "+ New", or "Sign in" for a guest
+     (who cannot create terminals). One rule so the two can't drift apart. */
+  #newtab, #signin { background: transparent; color: var(--fg);
+    border: 1px dashed var(--tab-border); border-radius: 4px; cursor: pointer;
+    padding: 5px 10px; font-size: 13px; white-space: nowrap; }
+  #newtab:hover, #signin:hover { border-color: var(--accent); }
 
   #terminals { position: relative; flex: 1; min-height: 0; min-width: 0; }
   .term-pane { position: absolute; inset: 0; display: none; background: var(--bg); }
@@ -128,6 +136,7 @@
 <div id="app" class="bar-{{.TabBarPosition}}{{if not .MultiSession}} hide-tabs{{end}}">
   <div id="tabbar">
     {{if and .MultiSession (not .IsGuest)}}<button id="newtab" title="New terminal">+ New</button>{{end}}
+    {{if .IsGuest}}<button id="signin" title="Sign in to use your own terminals">Sign in</button>{{end}}
   </div>
   <div id="terminals"></div>
   <div id="status"></div>
