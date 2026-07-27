@@ -63,6 +63,7 @@
   const S_OUTPUT = 0x6f; // 'o'
   const S_EXIT = 0x65;   // 'e' — session stream ended
   const S_REPLAY = 0x72; // 'r' — scrollback repaint (suppress query replies)
+  const S_ROLE = 0x52;   // 'R' — "1"/"0": is this connection the query responder
   const S_PONG = 0x70;   // 'p' — reply to our C_PING (liveness)
 
   // In persistence-off mode there is no cookie; the page identity travels as
@@ -174,7 +175,78 @@
         });
       } catch (e) {}
     }
+    installQueryGuards(term, () => entryForTerm(term));
     return { term, fit };
+  }
+
+  // canReply: may this terminal send terminal-GENERATED responses right now?
+  //
+  // One predicate covers both reasons it must stay silent, which used to be two
+  // separate ad-hoc gates:
+  //
+  //   - Not the responder. Every attached browser is a terminal, so if they all
+  //     answer a capability query the program consumes one reply and the
+  //     surplus lands at the shell prompt as phantom input — visible text
+  //     nobody typed, plus a bell. The server designates exactly one responder
+  //     per session (and promotes another if it leaves).
+  //   - Replaying. A scrollback repaint re-parses queries that were already
+  //     answered when they first went by; answering again injects the replies
+  //     as phantom input.
+  //
+  // Real keystrokes are never affected: suppression happens in the parser
+  // handlers below, so only sequences the TERMINAL would answer are silenced.
+  function canReply(entry) {
+    return !!entry && !entry.replaying && entry.isResponder !== false;
+  }
+
+  // installQueryGuards intercepts the sequences xterm.js answers on its own.
+  // Returning true means "handled" — the built-in handler never runs, so no
+  // reply is emitted. Returning false falls through to the default, which
+  // replies as usual.
+  function installQueryGuards(term, getEntry) {
+    const p = term.parser;
+    if (!p || !p.registerCsiHandler) return;
+    const mute = () => !canReply(getEntry());
+    const csi = (id) => { try { p.registerCsiHandler(id, mute); } catch (e) {} };
+
+    // Device attributes: primary (CSI c / CSI ? c), secondary (CSI > c),
+    // tertiary (CSI = c).
+    csi({ final: "c" });
+    csi({ prefix: "?", final: "c" });
+    csi({ prefix: ">", final: "c" });
+    csi({ prefix: "=", final: "c" });
+    // Device status report — CSI 5n (status) and CSI 6n (cursor position),
+    // plus the DEC private form.
+    csi({ final: "n" });
+    csi({ prefix: "?", final: "n" });
+    // DECRQM (mode query) -> DECRPM reply.
+    csi({ intermediates: "$", final: "p" });
+    csi({ prefix: "?", intermediates: "$", final: "p" });
+    // XTVERSION (CSI > q) -> DCS reply.
+    csi({ prefix: ">", final: "q" });
+    // Window ops (CSI t): only the REPORTING variants reply; 1-10/22/23 are
+    // actions (raise, iconify, save title) that must still work everywhere.
+    try {
+      p.registerCsiHandler({ final: "t" }, (params) => {
+        const op = params && params.length ? params[0] : 0;
+        const reports = op === 11 || op === 13 || op === 14 || op === 15 ||
+                        op === 16 || op === 18 || op === 19 || op === 20 || op === 21;
+        return reports ? !canReply(getEntry()) : false;
+      });
+    } catch (e) {}
+    // OSC colour queries: OSC 10/11/12 (fg/bg/cursor) and OSC 4 (palette) with
+    // a "?" payload ask the terminal to report a colour.
+    if (p.registerOscHandler) {
+      const oscQuery = (id) => {
+        try {
+          p.registerOscHandler(id, (data) => {
+            if (String(data).indexOf("?") < 0) return false; // a SET, not a query
+            return !canReply(getEntry());
+          });
+        } catch (e) {}
+      };
+      [4, 10, 11, 12].forEach(oscQuery);
+    }
   }
 
   // --- Terminal bell -------------------------------------------------------
@@ -314,6 +386,9 @@
           clearTimeout(entry._replayGuard);
           entry.replaying = false;
         });
+      } else if (data[0] === S_ROLE) {
+        // Exactly one attached viewer answers terminal capability queries.
+        entry.isResponder = data[1] === 0x31; // '1'
       } else if (data[0] === S_EXIT) {
         entry.exited = true;
         // No need to close our side here: the server sends a WebSocket close
@@ -524,13 +599,14 @@
 
     if (!cfg.readonly && !readOnly) {
       term.onData((d) => {
-        // While a scrollback repaint parses, drop the terminal's OWN auto
-        // replies to queries embedded in it (DA / cursor-position / color) —
-        // they'd reach the shell as phantom input. Those always start with
-        // ESC; real typing (Ctrl-C, text, Enter) must still get through, since
-        // an overflow repaint can fire mid-stream while the user is trying to
-        // interrupt a flood.
-        if (entry.replaying && d.charCodeAt(0) === 0x1b) return;
+        // Terminal-GENERATED reports that aren't replies to a parsed sequence:
+        // focus in/out, emitted whenever this browser gains or loses focus if a
+        // program enabled focus reporting. Every viewer would send its own, so
+        // only the responder reports. Query replies are suppressed at the
+        // parser instead (see installQueryGuards) — precisely, rather than by
+        // guessing from a leading ESC, which would also swallow the user's
+        // arrow keys.
+        if ((d === "\x1b[I" || d === "\x1b[O") && !canReply(entry)) return;
         if (entry.awaitRestart) {
           if (d === "\r") restartSession(entry);
           return;
@@ -668,6 +744,10 @@
       id: info.id, term, fit, pane, tabEl, titleEl, badge, pinEl, closeEl,
       ws: null, connected: false, exited: false, awaitRestart: false,
       sessionGone: false, replaying: false, stalled: false, lastSeen: 0,
+      // Until the server says otherwise, assume we answer queries: a lone
+      // viewer is always the responder, and defaulting to silent would hang
+      // programs that wait for a reply.
+      isResponder: true,
       reconnectTimer: null, _backoff: 500,
       renderer: null, rendererLoaded: false,
       shared: !!info.shared, readOnly: readOnly, sharedOut: !!info.sharedOut,

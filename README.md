@@ -306,6 +306,16 @@ Note: When displaying full screen terminal programs when sharing, like VI or eve
   respawns by default — multi-session leaves the tab bar empty,
   single-session offers restart on Enter; set`auto-respawn: true` for the
   old immediately-start-a-new-one behavior.
+- **One query responder per session** — terminal capability queries (device
+  attributes, cursor position, OSC colour) are answered by the *terminal*, and
+  with multiple viewers every attached browser is a terminal. If they all
+  answered, the program would consume one reply and each surplus reply would
+  land at the shell prompt as phantom input: text nobody typed, plus spurious
+  bells. The server therefore designates exactly one attached connection as the
+  responder (promoting a survivor if it disconnects) and the rest suppress
+  their replies at the parser, so real keystrokes are untouched. This applies to
+  any multi-viewer situation — a shared terminal, or simply the same user with
+  two browsers open.
 - `GET /healthz` returns 200 without auth, for load balancers and monitors.
 
 ### Handling output floods

@@ -25,6 +25,10 @@ const (
 	// again injects the responses as phantom input at the shell prompt)
 	srvPong = 'p' // reply to a client '2' ping; lets the client detect a
 	// dead network (protocol-level ping/pong is invisible to browser JS)
+	srvRole = 'R' // payload "1"/"0": is this connection the session's query
+	// responder? Exactly one attached viewer answers terminal capability
+	// queries; the others would otherwise each send a reply, and every reply
+	// past the first lands at the shell prompt as phantom input.
 )
 
 type resizePayload struct {
@@ -139,6 +143,24 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 	done := make(chan struct{})
 	quit := make(chan struct{})    // closed by the reader when the conn drops
 	pong := make(chan struct{}, 1) // reader requests an app-level pong reply
+	role := make(chan bool, 1)     // responder role changes, written by the writer
+
+	// Register for the query-responder election. setRole may fire from another
+	// connection's teardown (promotion), so it only hands the value to this
+	// connection's writer — the sole writer on the socket. A stale pending
+	// value is dropped; only the newest role matters.
+	setRole := func(isResponder bool) {
+		select {
+		case <-role:
+		default:
+		}
+		select {
+		case role <- isResponder:
+		default:
+		}
+	}
+	connSeq := sess.AttachConn(setRole)
+	defer sess.DetachConn(connSeq)
 
 	// Writer: coalesced terminal output + keepalive pings -> websocket.
 	// Sole writer to conn from here on. Returns promptly on quit so cleanup
@@ -154,6 +176,14 @@ func (s *Server) serveWS(conn *websocket.Conn, cl *session.Client, sess *session
 				return
 			case <-pong:
 				if err := sendFrame(srvPong, nil); err != nil {
+					return
+				}
+			case isResponder := <-role:
+				payload := []byte{'0'}
+				if isResponder {
+					payload = []byte{'1'}
+				}
+				if err := sendFrame(srvRole, payload); err != nil {
 					return
 				}
 			case <-sub.Notify():

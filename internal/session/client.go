@@ -35,6 +35,58 @@ type Session struct {
 	// the owner may share/revoke; on owner-close all sharers are evicted.
 	owner   string
 	sharers map[string]*Client
+
+	// Query-responder election. Capability queries (device attributes, cursor
+	// position, OSC colour) are answered by the TERMINAL — and every attached
+	// browser is a terminal. If they all answer, the program consumes one reply
+	// and the surplus lands at the shell prompt as phantom input: visible text
+	// nobody typed, plus spurious bells. So exactly one attached connection is
+	// designated the responder and the rest stay silent. conns maps a
+	// connection id to its role-change callback; responder is the current
+	// holder (0 = none), promoted automatically when it disconnects.
+	conns       map[uint64]func(bool)
+	nextConnSeq uint64
+	responder   uint64
+}
+
+// AttachConn registers a live connection and tells it whether it is the
+// session's query responder. Returns the id to pass to DetachConn.
+func (s *Session) AttachConn(setRole func(bool)) uint64 {
+	s.mu.Lock()
+	if s.conns == nil {
+		s.conns = make(map[uint64]func(bool))
+	}
+	s.nextConnSeq++
+	id := s.nextConnSeq
+	s.conns[id] = setRole
+	first := s.responder == 0
+	if first {
+		s.responder = id
+	}
+	s.mu.Unlock()
+	// Outside the lock: setRole hands off to the connection's writer.
+	setRole(first)
+	return id
+}
+
+// DetachConn unregisters a connection, promoting a survivor if the responder
+// left — otherwise nobody would answer queries and programs that wait for a
+// reply would hang.
+func (s *Session) DetachConn(id uint64) {
+	s.mu.Lock()
+	delete(s.conns, id)
+	var promote func(bool)
+	if s.responder == id {
+		s.responder = 0
+		for cid, fn := range s.conns {
+			s.responder, promote = cid, fn
+			break
+		}
+	}
+	s.mu.Unlock()
+	if promote != nil {
+		promote(true)
+	}
 }
 
 // Term returns the underlying terminal.
