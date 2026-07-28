@@ -45,12 +45,12 @@ func main() {
 	sessionPersistence := flag.BoolP("session-persistence", "P", def.SessionPersistence, "keep sessions alive across disconnects")
 	persistenceMode := flag.String("persistence-mode", string(def.PersistenceMode), "how sessions are tied to a client: 'short_term', 'user' or 'proxy_header'")
 	idleTimeout := flag.Duration("idle-timeout", def.IdleTimeout, "for 'short_term' mode: reap sessions with no connection for this long")
-	users := flag.StringP("users", "u", "", "HTTP basic-auth users for 'user' mode, comma-separated `name:password` pairs, each user gets their own session.\nWhen session-persistence=false, user(s) is a plain access gate (login required, sessions stay ephemeral)")
+	users := flag.StringP("users", "u", "", "HTTP login users for 'user' persistence-mode, comma-separated `name:password` pairs, each user gets their own\nsession. When mode is not 'user' or session-persistence is false, user(s) login is a plain access gate")
 	authRealm := flag.String("auth-realm", def.AuthRealm, "HTTP basic-auth realm")
 	proxyHeaderName := flag.String("proxy-header-name", def.ProxyHeaderName, "header `key` carrying the user identity for 'proxy_header' persistance mode, each user ID gets their own\nsession")
 	scrollback := flag.Int("scrollback-bytes", def.ScrollbackBytes, "server-side replay buffer per persistent session")
 	allowSharing := flag.Bool("allow-sharing", def.AllowSharing, "allow sharing a terminal tab with another authenticated user via a link (need persistent-mode)")
-	publicShareLinks := flag.String("public-share-links", def.PublicShareLinks, "how far a share link may skip authentication: 'none', 'readonly' or 'all' (needs allow-sharing)")
+	publicShareLinks := flag.String("public-share-links", def.PublicShareLinks, "type of links that can be shared publicly (skips authentication): 'none', 'readonly' or 'all'\nThis enabled an option in UI to share as public link (needs allow-sharing)")
 	maxClients := flag.Int("max-clients-per-session", def.MaxClientsPerSession, "concurrent viewers per session (0 = unlimited)")
 	cookieName := flag.String("cookie-name", def.CookieName, "short_term session cookie name")
 	cookieSecure := flag.Bool("cookie-secure", def.CookieSecure, "mark the session cookie Secure (HTTPS only)")
@@ -79,7 +79,21 @@ func main() {
 	doUpgrade := flag.Bool("upgrade", false, "self-upgrade the binary to the latest release and exit")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "TtyServe v%s - Serve Terminal on the web\n\n", version)
+		fmt.Fprintf(os.Stderr, `
+ ███████████  █████                █████████
+░█░░░███░░░█ ░░███                ███░░░░░███
+░   ░███  ░  ███████   █████ ████░███    ░░░   ██████  ████████  █████ █████  ██████
+    ░███    ░░░███░   ░░███ ░███ ░░█████████  ███░░███░░███░░███░░███ ░░███  ███░░███
+    ░███      ░███     ░███ ░███  ░░░░░░░░███░███████  ░███ ░░░  ░███  ░███ ░███████
+    ░███      ░███ ███ ░███ ░███  ███    ░███░███░░░   ░███      ░░███ ███  ░███░░░
+    █████     ░░█████  ░░███████ ░░█████████ ░░██████  █████      ░░█████   ░░██████
+   ░░░░░       ░░░░░    ░░░░░███  ░░░░░░░░░   ░░░░░░  ░░░░░        ░░░░░     ░░░░░░
+                        ███ ░███
+                       ░░██████
+                        ░░░░░░                                             %10s
+	   `, "v"+version)
+		//fmt.Fprintf(os.Stderr, "TtyServe v%s - Serve Terminal on the web", version)
+		fmt.Fprintf(os.Stderr, "\n")
 		fmt.Fprintf(os.Stderr, "Command line Usage:\n")
 		fmt.Fprintf(os.Stderr, "  %s --command \"<program> [args...]\" [options]\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  or\n")

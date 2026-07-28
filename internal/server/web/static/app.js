@@ -511,7 +511,36 @@
     const entry = panes.get(activeId);
     if (!entry) return;
     try { entry.fit.fit(); } catch (e) {}
+    syncScrollArea(entry);
     sendResize(entry);
+  }
+
+  // Recompute the terminal's scrollable height.
+  //
+  // A pane is display:none until first activated, so it has no layout and
+  // xterm never sizes its scroll area: the wheel and scrollbar do nothing even
+  // though scrollback exists. Nothing repairs that on activation — fit() bails
+  // out because background tabs are created already holding the active tab's
+  // cols/rows (so a replay can't wrap at the wrong width), and by then the
+  // renderer has measured, so a same-size resize() is a no-op too. Only an
+  // explicit sync works; verified in a real browser that this and a ±1 scroll
+  // are the only things that restore it — which is why dragging a selection to
+  // scroll repairs the tab by hand.
+  //
+  // Called from fitActive so it inherits the 0 / rAF / 150ms retry cadence:
+  // layout is not necessarily flushed the instant a pane becomes visible.
+  function syncScrollArea(entry) {
+    try {
+      entry.term._core.viewport.syncScrollArea(true);
+      return;
+    } catch (e) {}
+    // Public fallback if those internals ever move: scrolling emits the event
+    // that syncs the viewport. Up-then-down, so a terminal sitting at the
+    // bottom stays there (down-then-up leaves it one line short).
+    try {
+      entry.term.scrollLines(-1);
+      entry.term.scrollLines(1);
+    } catch (e) {}
   }
 
   // fit() silently no-ops when called before xterm's first render (cell
