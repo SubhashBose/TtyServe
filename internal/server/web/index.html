@@ -44,6 +44,9 @@
     border-radius: 4px; padding: 5px 10px; cursor: pointer; white-space: nowrap;
     display: flex; align-items: center; gap: 6px; font-size: 13px; user-select: none; }
   .tab.active { background: var(--tab-active); border-color: var(--accent); }
+  /* On screen in another panel, but not the focused one. A background tint,
+     not a border: the blue border must keep meaning "focused". */
+  .tab.shown:not(.active) { background: #252526; }
   .tab.dragging { opacity: .5; }
   .tab::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
     background: #4ec9b0; flex: none; }
@@ -113,8 +116,38 @@
   #newtab:hover, #signin:hover { border-color: var(--accent); }
 
   #terminals { position: relative; flex: 1; min-height: 0; min-width: 0; }
+  /* Split layout: a tree of .split (flex row/col) and .slot leaves. Each slot
+     hosts one session's .term-pane; panes not in the layout stay parked as
+     direct children of #terminals, hidden. */
+  .layout-root { position: absolute; inset: 0; display: flex; }
+  .layout-root > *, .split > .slot, .split > .split { flex: 1 1 0; min-width: 0; min-height: 0; }
+  .split { display: flex; }
+  .split.row { flex-direction: row; }
+  .split.col { flex-direction: column; }
+  .slot { position: relative; }
+  /* Divider: a 1px line with a wider invisible grab area either side of it.
+     Double-click to reset to an even split. */
+  .gutter { flex: none; position: relative; z-index: 10; background: var(--tab-border); }
+  .split.row > .gutter { width: 1px; cursor: col-resize; }
+  .split.col > .gutter { height: 1px; cursor: row-resize; }
+  .gutter::after { content: ""; position: absolute; }
+  .split.row > .gutter::after { top: 0; bottom: 0; left: -4px; right: -4px; }
+  .split.col > .gutter::after { left: 0; right: 0; top: -4px; bottom: -4px; }
+  .gutter:hover, .gutter.dragging { background: var(--accent); }
+  /* While dragging, keep the resize cursor everywhere and stop text selection
+     starting in a terminal the pointer passes over. */
+  body.resizing-row, body.resizing-row * { cursor: col-resize !important; user-select: none; }
+  body.resizing-col, body.resizing-col * { cursor: row-resize !important; user-select: none; }
   .term-pane { position: absolute; inset: 0; display: none; background: var(--bg); }
-  .term-pane.active { display: block; }
+  .term-pane.shown { display: block; }
+  /* With more than one panel, outline the one keystrokes go to. */
+  .layout-root.multi .term-pane.active::before { content: ""; position: absolute;
+    inset: 0; border: 1px solid var(--accent); pointer-events: none; z-index: 4; }
+  /* Drop target preview while dragging a tab over the terminal area. */
+  .dropzone { position: absolute; z-index: 50; display: none; pointer-events: none;
+    background: rgba(14, 99, 156, .22); border: 2px solid var(--accent); border-radius: 4px; }
+  /* Centre drop: joins this panel's tabs rather than splitting it. */
+  .dropzone.center { border-style: dashed; background: rgba(14, 99, 156, .14); }
   /* Physically inset the terminal from the pane edges for breathing room,
      with a bit more at the bottom so the last line clears the rounded
      corners of an embedding frame. The fit addon measures this element, so

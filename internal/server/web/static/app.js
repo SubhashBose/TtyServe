@@ -339,8 +339,8 @@
       updateTabState(entry);
       showStatus("connected");
       refreshConnStatus(); // other tabs may still be down
-      if (entry.id === activeId) {
-        fitActiveSoon(); // fit (or re-fit) now that we can tell the PTY
+      if (shownIds.has(entry.id)) {
+        fitVisibleSoon(); // fit (or re-fit) now that we can tell the PTY
       } else {
         sendResize(entry);
       }
@@ -364,7 +364,7 @@
       // this paints it as soon as there's something to show.
       if ((data[0] === S_OUTPUT || data[0] === S_REPLAY) && !entry._paintedConn) {
         entry._paintedConn = true;
-        if (entry.id === activeId) fitActiveSoon();
+        if (shownIds.has(entry.id)) fitVisibleSoon();
       }
       if (data[0] === S_OUTPUT) {
         entry.term.write(data.subarray(1));
@@ -501,18 +501,23 @@
   }
 
   function sendResize(entry) {
+    // Held while a divider is dragged; the release sends the final size.
+    if (dividerDragging) return;
     if (entry.ws && entry.ws.readyState === WebSocket.OPEN) {
       const dims = { cols: entry.term.cols, rows: entry.term.rows };
       entry.ws.send(C_RESIZE + JSON.stringify(dims));
     }
   }
 
-  function fitActive() {
-    const entry = panes.get(activeId);
-    if (!entry) return;
-    try { entry.fit.fit(); } catch (e) {}
-    syncScrollArea(entry);
-    sendResize(entry);
+  // Fit every terminal currently on screen to its panel.
+  function fitVisible() {
+    for (const id of shownIds) {
+      const entry = panes.get(id);
+      if (!entry) continue;
+      try { entry.fit.fit(); } catch (e) {}
+      syncScrollArea(entry);
+      sendResize(entry);
+    }
   }
 
   // Recompute the terminal's scrollable height.
@@ -527,7 +532,7 @@
   // are the only things that restore it — which is why dragging a selection to
   // scroll repairs the tab by hand.
   //
-  // Called from fitActive so it inherits the 0 / rAF / 150ms retry cadence:
+  // Called from fitVisible so it inherits the 0 / rAF / 150ms retry cadence:
   // layout is not necessarily flushed the instant a pane becomes visible.
   function syncScrollArea(entry) {
     try {
@@ -547,11 +552,366 @@
   // metrics aren't measured yet), which would leave the terminal at 80
   // columns in a full-width window. Re-fit a few times shortly after to
   // catch the renderer once it's ready.
-  function fitActiveSoon() {
-    fitActive();
-    requestAnimationFrame(fitActive);
-    setTimeout(fitActive, 150);
+  function fitVisibleSoon() {
+    fitVisible();
+    requestAnimationFrame(fitVisible);
+    setTimeout(fitVisible, 150);
   }
+
+  // --- Split layout --------------------------------------------------------
+  //
+  // The terminal area is a binary tree of panels:
+  //   leaf: { tabs: ["<id>", ...], active: "<id>" }   a panel; shows `active`
+  //   node: { dir: "row" | "col", ratio, a: <tree>, b: <tree> }   (row = side by side)
+  //         ratio is the first child's share, set by dragging the divider.
+  //
+  // Each panel holds a STACK of tabs and shows one of them, like an editor
+  // group: clicking a tab shows it in its own panel. A panel's `tabs` is in
+  // most-recently-shown order (visible one last), so when the visible tab
+  // leaves, the one you were looking at before it comes back.
+  //
+  // Nothing is ever merely hidden: a tab is in a panel's stack, or not placed
+  // yet (brand new, or adopted from another window) and joins the focused
+  // panel the first time it is shown. One panel holding every tab is exactly
+  // the plain tab behaviour, so single-pane mode needs no special case.
+  //
+  // A tab is in at most one panel. A session has exactly one PTY size, so
+  // showing it in two panels of different widths would make them fight over it.
+  //
+  // The layout is a property of THIS browser's view, not of the sessions: it is
+  // kept in localStorage (like pinned tabs), so a laptop and a phone can arrange
+  // the same terminals differently and a share recipient never inherits it.
+  //
+  // activeId is the FOCUSED tab (keystrokes, highlighted tab); shownIds is
+  // every tab currently on screen (each panel's `active`).
+  const LS_LAYOUT = "ttyserve_layout";
+  let layout = null;
+  let shownIds = new Set();
+  let renderedKey = "";
+  const layoutRoot = document.createElement("div");
+  layoutRoot.className = "layout-root";
+  termsEl.appendChild(layoutRoot);
+  const dropEl = document.createElement("div");
+  dropEl.className = "dropzone";
+  termsEl.appendChild(dropEl);
+  // Too narrow for side-by-side panels: show only the focused one, but keep
+  // the saved arrangement so it returns on a wider screen.
+  const narrowMQ = window.matchMedia ? window.matchMedia("(max-width: 640px)") : null;
+  const isNarrow = () => !!(narrowMQ && narrowMQ.matches);
+
+  function isLeaf(n) { return !!n && Array.isArray(n.tabs); }
+  function leafNodes(n, out) {
+    out = out || [];
+    if (!n) return out;
+    if (isLeaf(n)) out.push(n);
+    else { leafNodes(n.a, out); leafNodes(n.b, out); }
+    return out;
+  }
+  // The panel whose stack holds a tab, or null if it isn't placed yet.
+  function leafOf(id) {
+    for (const leaf of leafNodes(layout)) if (leaf.tabs.indexOf(id) >= 0) return leaf;
+    return null;
+  }
+  function focusedPanel() { return leafOf(activeId) || leafNodes(layout)[0] || null; }
+  function parentOf(n, child) {
+    if (!n || isLeaf(n)) return null;
+    if (n.a === child || n.b === child) return n;
+    return parentOf(n.a, child) || parentOf(n.b, child);
+  }
+  // Remove a panel; its sibling takes the parent's place.
+  function removeNode(n, target) {
+    if (!n || n === target) return null;
+    if (isLeaf(n)) return n;
+    const a = removeNode(n.a, target), b = removeNode(n.b, target);
+    if (!a) return b;
+    if (!b) return a;
+    n.a = a; n.b = b;
+    return n;
+  }
+  function replaceNode(n, target, repl) {
+    if (n === target) return repl;
+    if (!n || isLeaf(n)) return n;
+    n.a = replaceNode(n.a, target, repl);
+    n.b = replaceNode(n.b, target, repl);
+    return n;
+  }
+  // Make a tab the one its panel shows.
+  function bringToFront(leaf, id) {
+    leaf.tabs = leaf.tabs.filter((t) => t !== id);
+    leaf.tabs.push(id);
+    leaf.active = id;
+  }
+  // Take a tab out of its panel. A panel left empty disappears — that is how a
+  // split is undone.
+  function detachTab(id) {
+    const leaf = leafOf(id);
+    if (!leaf) return;
+    leaf.tabs = leaf.tabs.filter((t) => t !== id);
+    if (!leaf.tabs.length) layout = removeNode(layout, leaf);
+    else if (leaf.active === id) leaf.active = leaf.tabs[leaf.tabs.length - 1];
+  }
+  // Rebuild a tree from untrusted input (localStorage): only known tabs, each
+  // at most once, only well-formed nodes. Also reads the earlier one-tab-per-
+  // panel format ({ session }).
+  function pruneLayout(n, valid) {
+    const seen = new Set();
+    function walk(n) {
+      if (!n || typeof n !== "object") return null;
+      if (Array.isArray(n.tabs) || typeof n.session === "string") {
+        const src = Array.isArray(n.tabs) ? n.tabs : [n.session];
+        const tabs = src.filter((id) => typeof id === "string" && valid.has(id) && !seen.has(id));
+        tabs.forEach((id) => seen.add(id));
+        if (!tabs.length) return null;
+        const want = Array.isArray(n.tabs) ? n.active : n.session;
+        const leaf = { tabs, active: tabs[tabs.length - 1] };
+        if (tabs.indexOf(want) >= 0) bringToFront(leaf, want);
+        return leaf;
+      }
+      if (n.dir !== "row" && n.dir !== "col") return null;
+      const a = walk(n.a), b = walk(n.b);
+      if (!a) return b;
+      if (!b) return a;
+      return { dir: n.dir, ratio: clampRatio(n.ratio), a, b };
+    }
+    return walk(n);
+  }
+  function clampRatio(r) {
+    return typeof r === "number" && r > 0.05 && r < 0.95 ? r : 0.5;
+  }
+  function saveLayout() {
+    try { localStorage.setItem(LS_LAYOUT, JSON.stringify(layout)); } catch (e) {}
+  }
+  function loadLayout() {
+    try { return JSON.parse(localStorage.getItem(LS_LAYOUT) || "null"); } catch (e) { return null; }
+  }
+
+  function viewTree() {
+    if (!layout) return null;
+    if (isNarrow() && !isLeaf(layout)) return focusedPanel();
+    return layout;
+  }
+  // What is on screen and where — ignoring which tabs sit unseen in each
+  // stack, so growing a stack doesn't count as a rearrangement.
+  function viewKey(n) {
+    return JSON.stringify(n, (k, v) => (k === "tabs" ? undefined : v));
+  }
+
+  function buildView(n) {
+    if (isLeaf(n)) {
+      const slot = el("div", "slot");
+      slot.dataset.sid = n.active;
+      const entry = panes.get(n.active);
+      if (entry) {
+        slot.appendChild(entry.pane);
+        entry.pane.classList.add("shown");
+      }
+      return slot;
+    }
+    const split = el("div", "split " + n.dir);
+    const a = buildView(n.a), b = buildView(n.b), gutter = el("div", "gutter");
+    const apply = () => {
+      const r = clampRatio(n.ratio);
+      a.style.flex = r + " 1 0";
+      b.style.flex = (1 - r) + " 1 0";
+    };
+    apply();
+    gutter.addEventListener("pointerdown", (e) => startDividerDrag(e, n, split, apply));
+    gutter.addEventListener("dblclick", () => { // back to an even split
+      n.ratio = 0.5;
+      apply();
+      finishRatioChange();
+    });
+    split.append(a, gutter, b);
+    return split;
+  }
+
+  // Put the layout on screen. Panes are MOVED, not recreated, so each keeps its
+  // scrollback and connection. Rebuilds only when what is on screen changed: a
+  // click that just moves focus between visible panels re-parents nothing.
+  function renderLayout() {
+    const view = viewTree();
+    const key = viewKey(view);
+    const next = new Set(leafNodes(view).map((leaf) => leaf.active));
+    let stale = key !== renderedKey;
+    for (const id of next) {
+      const e = panes.get(id);
+      if (e && !layoutRoot.contains(e.pane)) stale = true;
+    }
+    if (stale) {
+      renderedKey = key;
+      const root = view ? buildView(view) : null;
+      for (const [id, e] of panes) {
+        if (next.has(id)) continue;
+        e.pane.classList.remove("shown");
+        if (e.pane.parentElement !== termsEl) termsEl.appendChild(e.pane);
+      }
+      layoutRoot.replaceChildren(...(root ? [root] : []));
+    }
+    shownIds = next;
+    layoutRoot.classList.toggle("multi", shownIds.size > 1);
+    for (const [id, e] of panes) e.tabEl.classList.toggle("shown", shownIds.has(id));
+  }
+
+  // Drag a divider. The panels resize live, but the PTYs are only told once,
+  // on release: every fit sends a resize, so doing it per mouse frame would
+  // deliver a SIGWINCH per frame and make full-screen programs (vim, htop)
+  // redraw continuously.
+  let dividerDragging = false;
+  function startDividerDrag(e, node, split, apply) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const gutter = e.currentTarget;
+    gutter.setPointerCapture(e.pointerId);
+    gutter.classList.add("dragging");
+    document.body.classList.add("resizing-" + node.dir);
+    dividerDragging = true;
+    const rect = split.getBoundingClientRect();
+    const horiz = node.dir === "row";
+    const total = horiz ? rect.width : rect.height;
+    const min = Math.min(0.45, 120 / Math.max(total, 1)); // keep each side usable
+    let frame = 0;
+    const move = (ev) => {
+      const pos = horiz ? ev.clientX - rect.left : ev.clientY - rect.top;
+      node.ratio = Math.max(min, Math.min(1 - min, pos / total));
+      apply();
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; fitVisible(); });
+    };
+    const end = () => {
+      gutter.removeEventListener("pointermove", move);
+      gutter.removeEventListener("pointerup", end);
+      gutter.removeEventListener("pointercancel", end);
+      gutter.classList.remove("dragging");
+      document.body.classList.remove("resizing-" + node.dir);
+      if (frame) cancelAnimationFrame(frame);
+      dividerDragging = false;
+      finishRatioChange();
+    };
+    gutter.addEventListener("pointermove", move);
+    gutter.addEventListener("pointerup", end);
+    gutter.addEventListener("pointercancel", end);
+  }
+  // Only proportions changed, not the arrangement: record that so the next
+  // render doesn't needlessly re-parent every pane, then persist and let the
+  // PTYs know their final sizes.
+  function finishRatioChange() {
+    renderedKey = viewKey(viewTree());
+    saveLayout();
+    fitVisibleSoon();
+  }
+
+  function setFocused(id) {
+    activeId = id;
+    rememberActive(id);
+    for (const [sid, entry] of panes) {
+      const on = sid === id;
+      entry.pane.classList.toggle("active", on);
+      entry.tabEl.classList.toggle("active", on);
+    }
+  }
+
+  // A pane that just came on screen has layout for the first time: that is
+  // when the renderer can be swapped in safely (never while the page itself is
+  // hidden — see visibilitychange).
+  function ensureRenderers() {
+    if (document.hidden) return;
+    for (const id of shownIds) {
+      const entry = panes.get(id);
+      if (entry && !entry.rendererLoaded) {
+        entry.rendererLoaded = true;
+        loadRenderer(entry);
+      }
+    }
+  }
+
+  // Drop a dragged tab on the panel currently showing targetSid.
+  //   edge ("left"/"right"/"top"/"bottom"): a new panel on that side
+  //   "center": join that panel's stack and show there
+  // Either way the tab leaves its old panel first, and a panel left empty
+  // collapses — dropping a lone panel's tab onto another panel's centre is
+  // how you unsplit. Dropping never takes a terminal off screen for good.
+  function placeTab(id, targetSid, region) {
+    const target = leafOf(targetSid);
+    if (!panes.has(id) || !target || !dropMakesSense(id, targetSid, region)) return;
+    const source = leafOf(id);
+    if (region === "center") {
+      if (source !== target) {
+        detachTab(id);
+        target.tabs.push(id);
+      }
+      bringToFront(target, id);
+    } else {
+      // Target survives the detach: it is another panel, or keeps other tabs.
+      detachTab(id);
+      const dir = region === "left" || region === "right" ? "row" : "col";
+      const first = region === "left" || region === "top";
+      const mine = { tabs: [id], active: id };
+      layout = replaceNode(layout, target, first
+        ? { dir, ratio: 0.5, a: mine, b: target }
+        : { dir, ratio: 0.5, a: target, b: mine });
+    }
+    saveLayout();
+    activate(id);
+  }
+  // Whether a drop would change anything (used to hide pointless previews).
+  function dropMakesSense(id, targetSid, region) {
+    const target = leafOf(targetSid), source = leafOf(id);
+    if (!target) return false;
+    if (region === "center") return !(source === target && target.active === id);
+    return !(source === target && target.tabs.length === 1); // can't split off your only tab
+  }
+
+  // Merge a tab's panel into its neighbour: the menu equivalent of dragging it
+  // onto the neighbour's centre, bringing all of the panel's tabs along. The
+  // neighbour keeps showing what it showed.
+  function unsplitPanel(id) {
+    const leaf = leafOf(id);
+    const parent = leaf && parentOf(layout, leaf);
+    if (!parent) return;
+    const sibling = parent.a === leaf ? parent.b : parent.a;
+    const side = leafNodes(sibling);
+    // The panel physically next to it: the near edge of the other side.
+    const into = parent.a === leaf ? side[0] : side[side.length - 1];
+    into.tabs = leaf.tabs.concat(into.tabs);
+    layout = removeNode(layout, leaf);
+    saveLayout();
+    activate(into.active);
+  }
+
+  // A session was replaced by a new one (restart after its session was
+  // removed): the new session takes over the old one's place in its panel.
+  function replaceInLayout(oldId, newId) {
+    const leaf = leafOf(oldId);
+    if (!leaf) return;
+    leaf.tabs = leaf.tabs.map((t) => (t === oldId ? newId : t));
+    if (leaf.active === oldId) leaf.active = newId;
+    saveLayout();
+  }
+
+  // Where over a panel the pointer is: within the outer quarter, the nearest
+  // edge (split); further in, the centre (join its stack).
+  function dropRegion(slot, x, y) {
+    const r = slot.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return "center";
+    const fx = (x - r.left) / r.width, fy = (y - r.top) / r.height;
+    const d = { left: fx, right: 1 - fx, top: fy, bottom: 1 - fy };
+    let region = "center", best = 0.25;
+    for (const k of Object.keys(d)) if (d[k] < best) { best = d[k]; region = k; }
+    return region;
+  }
+  function showDrop(slot, region) {
+    const r = slot.getBoundingClientRect(), t = termsEl.getBoundingClientRect();
+    let left = r.left - t.left, top = r.top - t.top, w = r.width, h = r.height;
+    if (region === "left") w /= 2;
+    if (region === "right") { left += w / 2; w /= 2; }
+    if (region === "top") h /= 2;
+    if (region === "bottom") { top += h / 2; h /= 2; }
+    dropEl.classList.toggle("center", region === "center");
+    Object.assign(dropEl.style, {
+      display: "block", left: left + "px", top: top + "px", width: w + "px", height: h + "px",
+    });
+  }
+  function hideDrop() { dropEl.style.display = "none"; dropTarget = null; }
+  let dropTarget = null;
 
   // Copy text to the clipboard; falls back to a hidden textarea +
   // execCommand for non-secure (plain http) contexts where the async
@@ -614,6 +974,12 @@
     pane.appendChild(inner);
     termsEl.appendChild(pane);
     term.open(inner); // renderer upgrade happens on first activation
+    // Clicking into a visible panel focuses it (keystrokes, highlighted tab).
+    if (term.textarea) {
+      term.textarea.addEventListener("focus", () => {
+        if (activeId !== info.id && shownIds.has(info.id)) setFocused(info.id);
+      });
+    }
     // Background tabs are never fitted (their pane is display:none), so
     // xterm would sit at the default 80x24 — and a scrollback replay
     // produced at the real width would wrap and mis-position, exposing old
@@ -747,6 +1113,7 @@
       tabEl.addEventListener("dragend", () => {
         tabEl.classList.remove("dragging");
         draggedId = null;
+        hideDrop();
         saveOrder();
       });
       tabEl.addEventListener("dragover", (e) => {
@@ -802,33 +1169,29 @@
     try { await api("PUT", "sessions/order", { order: ids }); } catch (e) {}
   }
 
+  // Show a tab in its panel and focus it. A tab not placed yet joins the
+  // focused panel's stack — with one panel, exactly the plain tab behaviour —
+  // and whatever that panel showed before stays in its stack, one click away.
   function activate(id) {
     if (!panes.has(id)) return;
-    activeId = id;
-    rememberActive(id);
-    for (const [sid, entry] of panes) {
-      const on = sid === id;
-      entry.pane.classList.toggle("active", on);
-      entry.tabEl.classList.toggle("active", on);
-      if (on) {
-        // Don't steal focus while the tab title is being renamed: a
-        // double-click fires two clicks first, and their deferred
-        // term.focus() would blur the editor and kick us out of edit mode.
-        setTimeout(() => {
-          // First time this tab is shown its pane finally has dimensions:
-          // safe to swap in the GPU renderer now. Never do it while the
-          // page itself is hidden (background browser tab): rAF is
-          // suspended there and WebGL init corrupts, leaving invisible
-          // text — visibilitychange below picks it up instead.
-          if (!entry.rendererLoaded && !document.hidden) {
-            entry.rendererLoaded = true;
-            loadRenderer(entry);
-          }
-          fitActiveSoon();
-          if (!entry.renaming) entry.term.focus();
-        }, 0);
-      }
+    let leaf = leafOf(id);
+    if (!leaf) {
+      leaf = focusedPanel();
+      if (!leaf) leaf = layout = { tabs: [], active: id };
     }
+    bringToFront(leaf, id);
+    saveLayout();
+    setFocused(id);
+    renderLayout();
+    const entry = panes.get(id);
+    // Don't steal focus while the tab title is being renamed: a double-click
+    // fires two clicks first, and their deferred term.focus() would blur the
+    // editor and kick us out of edit mode.
+    setTimeout(() => {
+      ensureRenderers();
+      fitVisibleSoon();
+      if (panes.has(id) && !entry.renaming) entry.term.focus();
+    }, 0);
   }
 
   function beginRename(id, titleEl) {
@@ -908,12 +1271,25 @@
     }
     entry.pane.remove();
     entry.tabEl.remove();
-    if (activeId === id) {
+    const panel = leafOf(id);
+    const wasShown = shownIds.has(id);
+    detachTab(id); // its panel shows the tab before it, or collapses if empty
+    if (!layout) {
       const first = panes.keys().next();
-      if (!first.done) {
-        activate(first.value);
+      if (!first.done) layout = { tabs: [first.value], active: first.value };
+    }
+    saveLayout();
+    if (wasShown || activeId === id) {
+      if (layout) {
+        let next = activeId;
+        if (activeId === id) {
+          // Focus stays where you were: the same panel if it survived.
+          next = panel && leafNodes(layout).indexOf(panel) >= 0 ? panel.active : leafNodes(layout)[0].active;
+        }
+        activate(next);
       } else {
         activeId = null;
+        renderLayout();
         // Respawn when stale-state removal asks for it, or always with
         // auto-respawn on — guarded against tight crash loops either way.
         const now = Date.now();
@@ -947,6 +1323,7 @@
       try { entry.term.dispose(); } catch (e) {}
       entry.pane.remove();
       entry.tabEl.remove();
+      replaceInLayout(entry.id, info.id); // the new session keeps the panel
       createTab(info);
       activate(info.id);
       return;
@@ -1179,6 +1556,9 @@
     edit: '<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
     close: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
     ban: '<circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>',
+    splitRight: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/>',
+    splitDown: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/>',
+    unsplit: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="15"/><line x1="15" y1="9" x2="9" y2="15"/>',
   };
   function iconSVG(name) {
     return '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
@@ -1252,6 +1632,18 @@
     }
     // Rename is owner-only (the title is shared state).
     if (!entry.shared) items.push(["edit", "Rename", () => beginRename(id, entry.titleEl)]);
+    if (cfg.multiSession && panes.size > 1) {
+      // Split beside the focused panel — or, for a tab in the focused panel's
+      // own stack, split it out of that panel.
+      const own = leafOf(id), focus = focusedPanel();
+      if (focus && dropMakesSense(id, focus.active, "right")) {
+        items.push(["splitRight", "Split right", () => placeTab(id, focus.active, "right")]);
+        items.push(["splitDown", "Split down", () => placeTab(id, focus.active, "bottom")]);
+      }
+      if (own && leafNodes(layout).length > 1) {
+        items.push(["unsplit", "Unsplit panel", () => unsplitPanel(id)]);
+      }
+    }
     if (cfg.multiSession) {
       items.push(["pin", entry.pinned ? "Unpin" : "Pin", () => togglePin(id)]);
       if (!entry.pinned) items.push(["close", "Close", () => closeSession(id)]);
@@ -1355,17 +1747,57 @@
     // Let drops land anywhere on the bar, not just on other tabs.
     tabbar.addEventListener("dragover", (e) => { if (draggedId) e.preventDefault(); });
     tabbar.addEventListener("drop", (e) => { if (draggedId) e.preventDefault(); });
-    window.addEventListener("resize", fitActive);
+    window.addEventListener("resize", fitVisible);
     if (window.ResizeObserver) {
-      new ResizeObserver(() => fitActive()).observe(termsEl);
+      new ResizeObserver(() => fitVisible()).observe(termsEl);
     }
+    // Crossing the narrow breakpoint collapses/restores the split view.
+    if (narrowMQ && narrowMQ.addEventListener) {
+      narrowMQ.addEventListener("change", () => {
+        renderLayout();
+        ensureRenderers();
+        fitVisibleSoon();
+      });
+    }
+    // Dragging a tab over the terminal area previews where it would land;
+    // dropping splits that panel (edges) or joins its stack (centre).
+    //
+    // Capture phase and an unconditional preventDefault on drop, on purpose:
+    // the drag carries the session id as text/plain, and xterm's input is a
+    // <textarea> — left to the browser's default, a tab dropped onto a
+    // terminal would TYPE its session id into the shell.
+    termsEl.addEventListener("dragover", (e) => {
+      if (!draggedId) return;
+      e.preventDefault();
+      const slot = e.target instanceof Element ? e.target.closest(".slot") : null;
+      const region = slot ? dropRegion(slot, e.clientX, e.clientY) : null;
+      if (!cfg.multiSession || !slot || !layoutRoot.contains(slot) ||
+          !dropMakesSense(draggedId, slot.dataset.sid, region)) {
+        e.dataTransfer.dropEffect = "none";
+        hideDrop();
+        return;
+      }
+      e.dataTransfer.dropEffect = "move";
+      dropTarget = { sid: slot.dataset.sid, region };
+      showDrop(slot, region);
+    }, true);
+    termsEl.addEventListener("dragleave", (e) => {
+      if (!termsEl.contains(e.relatedTarget)) hideDrop();
+    }, true);
+    termsEl.addEventListener("drop", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const t = dropTarget, id = draggedId;
+      hideDrop();
+      if (t && id) placeTab(id, t.sid, t.region);
+    }, true);
     // Poll only when it has something to do: titles/adoption need tabs
     // (multiSession) and a stable identity (persistence). The reconnect
     // logic's alive-checks still touch the server's idle timer without it.
     if (cfg.persistence && cfg.multiSession) setInterval(syncSessions, 3000);
     // Cell metrics change once the terminal font finishes loading.
     if (document.fonts && document.fonts.ready) {
-      document.fonts.ready.then(() => fitActive());
+      document.fonts.ready.then(() => fitVisible());
     }
     // Client-side liveness: browsers cannot see protocol-level ping/pong,
     // so a silently dead network leaves the socket looking "open" for many
@@ -1439,12 +1871,8 @@
     // server restart) postponed their GPU renderer: load it once visible.
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) return;
-      const entry = panes.get(activeId);
-      if (entry && !entry.rendererLoaded) {
-        entry.rendererLoaded = true;
-        loadRenderer(entry);
-      }
-      fitActiveSoon();
+      ensureRenderers();
+      fitVisibleSoon();
       // Silence accumulated while hidden is NOT evidence of a dead link —
       // the heartbeat doesn't ping hidden tabs, so lastSeen simply goes
       // stale even on a healthy connection (this used to flash red +
@@ -1513,8 +1941,14 @@
     if (sharedTarget && list.some((s) => s.id === sharedTarget)) activeTarget = sharedTarget;
     else if (list.some((s) => s.id === last)) activeTarget = last;
     for (const info of list) createTab(info, true);
+    // Restore this browser's arrangement, keeping only sessions that still
+    // exist. Focus returns to whatever was focused, if it's still on screen.
+    layout = pruneLayout(loadLayout(), new Set(list.map((s) => s.id)));
+    if (leafOf(last)) activeId = last;
     activate(activeTarget);
-    connect(panes.get(activeTarget), activeTarget);
+    // Everything on screen connects now, focused panel first.
+    const visible = [activeId].concat([...shownIds].filter((id) => id !== activeId));
+    for (const id of visible) connect(panes.get(id), id);
     // One 200ms head start for the active tab, then dial the rest in tab
     // order back-to-back (skipping any closed or already-dialed meanwhile).
     // By now the active tab has been fitted; adopt its grid on each
@@ -1523,7 +1957,7 @@
     setTimeout(() => {
       const act = panes.get(activeTarget);
       for (const info of list) {
-        if (info.id === activeTarget) continue;
+        if (shownIds.has(info.id)) continue;
         const e = panes.get(info.id);
         if (!e || !panes.has(info.id) || e.ws) continue;
         if (act && act.term.cols > 2 && act.term.rows > 1) {

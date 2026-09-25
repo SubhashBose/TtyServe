@@ -27,6 +27,9 @@ renameable tab bar. Users can share terminal with other authenticated users for 
     Users with same login credentials will find terminal sessions persistent across browsers.
 - **Multiple sessions + tabs** (toggleable). Tab bar on **top** or **right**
   (configurable). **Rename** a tab by double-clicking its title. Add/close tabs.
+- **Split panels** — drag tabs onto the terminal area to arrange terminals side
+  by side or stacked, each panel with its own set of tabs; resize with a
+  draggable divider. See [Split panels](#split-panels).
 - **Single-session mode** — flip`multi-session: false` for one terminal, no tabs.
 - **Persistence off** — set`session-persistence: false` for ttyd-style ephemeral
   terminals that die on disconnect.
@@ -201,6 +204,52 @@ The directory comes from two sources, best first:
 - **`/proc/<pid>/cwd`** of the direct child, as fallback (Linux only; checked
   every few seconds, and only for sessions that produced output and have a
   viewer attached).
+
+## Split panels
+
+Available whenever tabs are (`multi-session: true`). Drag a tab from the tab bar
+onto the terminal area; a preview shows where it will land:
+
+- **Near an edge** (solid half-panel preview) — the tab opens as a **new
+  panel** on that side: left, right, top or bottom. Splits nest, so you can
+  build any grid.
+- **In the centre** (dashed whole-panel preview) — the tab **joins that
+  panel**.
+
+Each panel holds its own set of tabs and shows one of them at a time:
+
+- **Clicking a tab** in the tab bar shows it in *its* panel, so you can cycle a
+  panel through its tabs while the others stay put. Tabs currently on screen
+  are tinted in the tab bar; the focused one has the blue border, and the
+  focused panel has a thin blue outline. Clicking into a panel focuses it.
+- **+ New** opens the new terminal in the focused panel; what that panel showed
+  before stays in it, one click away.
+- **Closing a tab** shows the tab you viewed before it in the same panel; a
+  panel closes only when its last tab does.
+
+To **unsplit**, drag a panel's tab into the centre of another panel — a panel
+left with no tabs closes — or right-click a tab → **Unsplit panel**, which
+moves all of that panel's tabs into its neighbour. The same menu offers
+**Split right** / **Split down**, which also split a tab out of its own panel
+(e.g. put B beside A when both are in one panel).
+
+**Resizing** — drag the divider between two panels; double-click it to go back
+to an even split. Each side keeps a minimum of 120px. Panels reflow live while
+you drag, but the terminal programs are told their new size only once, when you
+release: resizing on every mouse move would send a `SIGWINCH` per frame and make
+full-screen programs like `vim` or `htop` redraw continuously.
+
+A few details worth knowing:
+
+- **Each panel's terminal has its own size** — `tput cols` in a half-width
+  panel reports roughly half the columns.
+- **A terminal is in at most one panel.** A session has a single PTY size, so it
+  can't be shown at two widths at once.
+- **The arrangement is per browser**, saved in `localStorage` alongside pinned
+  tabs and restored on reload (closed terminals simply drop out of it). Another
+  browser, or someone you share a tab with, keeps their own arrangement.
+- **Narrow screens** (under 640px wide) show only the focused panel; the split
+  comes back when the window is wide enough again.
 
 ## Sharing a terminal
 
